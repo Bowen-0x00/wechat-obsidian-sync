@@ -365,7 +365,20 @@ class RequestHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b"success")
 
-            # 提交后台解密与处理
+            # 检查是否是邮件助手 (1000002) 的微信指令消息
+            if self.server_instance.compat_crypt and self.server_instance.compat_crypt.verify_signature(timestamp, nonce, post_body, msg_signature):
+                try:
+                    decrypted_xml = self.server_instance.compat_crypt.decrypt_msg(msg_signature, timestamp, nonce, post_body)
+                    msg = MessageParser.parse_xml(decrypted_xml)
+                    if msg and msg.content:
+                        logger.info(f"[Server] 转发邮件助手微信交互指令 -> http://127.0.0.1:8087/command: {msg.content}")
+                        import requests
+                        requests.post("http://127.0.0.1:8087/command", json={"command": msg.content, "from_user": msg.from_user}, timeout=3)
+                except Exception as e:
+                    logger.warning(f"[Server] 转发邮件助手指令异常: {e}")
+                return
+
+            # 提交后台解密与处理 (Obsidian 笔记助手)
             self.server_instance.handle_incoming_xml(msg_signature, timestamp, nonce, post_body)
             return
 
