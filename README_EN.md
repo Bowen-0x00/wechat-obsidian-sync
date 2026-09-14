@@ -9,6 +9,8 @@
 **WeChat Obsidian Sync** is a 100% self-hosted, private, secure, and free note synchronization system connecting WeChat to Obsidian.
 Say goodbye to costly commercial subscription fees and privacy exposure risks! You can send quick thought memos, forward articles or web links, and share images directly from your **personal WeChat** mobile app. The cloud server automatically leverages Large Language Models (LLMs) to generate **100-word TLDR summaries and auto-tags**, seamlessly appending everything to your local **Obsidian Vault**.
 
+> 📖 **Step-by-Step SOP Guide**: See [WeChat Customer Service & Obsidian SOP Guide (docs/SOP_WECHAT_KF_SETUP.md)](docs/SOP_WECHAT_KF_SETUP.md) for detailed walk-throughs on enabling WeChat Customer Service, direct article forwarding with official badges, port 8088 Nginx reverse proxying, and native Obsidian plugin setup.
+
 ---
 
 ## ✨ Key Features
