@@ -1,0 +1,8 @@
+requests>=2.31.0
+PyYAML>=6.0
+loguru>=0.7.2
+openai>=1.50.0
+beautifulsoup4>=4.12.0
+cryptography>=40.0.0
+httpx>=0.27.0
+filelock>=3.13.0

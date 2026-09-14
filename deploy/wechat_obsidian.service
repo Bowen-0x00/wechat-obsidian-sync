@@ -1,0 +1,15 @@
+[Unit]
+Description=WeChat Obsidian Assistant Server
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/wechat_obsidian
+ExecStart=/root/mail_assist/venv/bin/python -m server.server
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

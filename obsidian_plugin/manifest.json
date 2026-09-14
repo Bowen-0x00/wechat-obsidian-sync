@@ -1,0 +1,9 @@
+{
+  "id": "wechat-obsidian-sync",
+  "name": "WeChat Obsidian 笔记助手",
+  "version": "1.0.0",
+  "minAppVersion": "0.15.0",
+  "description": "私有化微信笔记同步助手：接收微信随手记、公众号长文与图片，支持大模型 100 字速读与自动打标签。",
+  "author": "Private Assistant",
+  "isDesktopOnly": false
+}

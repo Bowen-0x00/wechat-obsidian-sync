@@ -1,0 +1,26 @@
+# Private Configurations & Secrets
+config.yaml
+*.pem
+*.key
+
+# Data & Databases & Media
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Python Caches & Environments
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+venv/
+env/
+ENV/
+
+# OS & IDE
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

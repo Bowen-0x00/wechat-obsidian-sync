@@ -1,0 +1,34 @@
+# WeChat to Obsidian 智能助手配置文件模板 (请复制为 config.yaml 并填入您的真实凭据)
+
+# 1. 企业微信自建应用 / 微信客服配置
+wechat:
+  corp_id: "YOUR_CORP_ID"
+  agent_id: 1000003
+  secret: "YOUR_SECRET"
+  token: "YOUR_TOKEN"
+  encoding_aes_key: "YOUR_ENCODING_AES_KEY"
+  open_kfid: "YOUR_OPEN_KFID"             # 微信客服账号 ID (可选)
+
+# 2. 大语言模型配置 (用于网页长文章 100 字核心速读与智能打标签)
+llm:
+  enable: true
+  base_url: "https://api.deepseek.com/v1" # 兼容 OpenAI 格式 API 地址
+  api_key: "YOUR_LLM_API_KEY"             # 请填入您的大模型 API Key
+  model: "deepseek-chat"                  # 模型名称
+  temperature: 0.2
+  proxy: null                             # 访问海外大模型接口时的本地代理，国内接口填 null
+
+# 3. 云端同步 API 安全密钥 (用于本地 Obsidian 插件拉取笔记时的身份凭据)
+sync:
+  api_secret: "YOUR_CUSTOM_SYNC_SECRET_TOKEN"
+  server_url: "http://your-server-domain.com"
+  port: 8088                              # 服务端监听端口
+
+# 4. 本地 Obsidian 归档设置
+obsidian:
+  vault_path: "D:/Obsidian/workspace"     # 您的 Obsidian 知识库绝对路径
+  archive_mode: "daily"                   # "daily" 按日归档，或 "inbox" 单文件归档
+  daily_folder: "10-Journal&Planning/13-note"
+  inbox_file: "00-Inbox/Inbox.md"
+  attachment_folder: "attachments"
+  format_template: "bullet"
