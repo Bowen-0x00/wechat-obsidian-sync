@@ -359,6 +359,20 @@ class RequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b"WeChat Obsidian Sync Server is active.")
 
+    def _forward_command(self, target_url: str, app_name: str, msg):
+        """异步将交互指令投递至后端服务并记录返回."""
+        if not msg or not msg.content:
+            return
+        def _post():
+            try:
+                import requests
+                logger.info(f"[Gateway] 转发微信指令至 [{app_name}] -> {target_url}: {msg.content}")
+                res = requests.post(target_url, json={"command": msg.content, "from_user": msg.from_user}, timeout=10)
+                logger.info(f"[Gateway] [{app_name}] 指令响应状态: {res.status_code}")
+            except Exception as e:
+                logger.error(f"[Gateway] 转发至 [{app_name}] 异常: {e}")
+        self.server_instance.executor.submit(_post)
+
     def do_POST(self):
         parsed = urlparse(self.path)
         params = parse_qs(parsed.query)
@@ -377,22 +391,51 @@ class RequestHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b"success")
 
-            # 检查是否为其他自建应用 (邮件通知 1000002, 社交雷达 1000004, 洞察引擎 1000005) 的指令
-            for route in self.server_instance.gateway_routes:
-                if route["crypt"].verify_signature(timestamp, nonce, post_body, msg_signature):
-                    try:
-                        decrypted_xml = route["crypt"].decrypt_msg(msg_signature, timestamp, nonce, post_body)
-                        msg = MessageParser.parse_xml(decrypted_xml)
-                        if msg and msg.content:
-                            target_url = f"http://127.0.0.1:{route['port']}/command"
-                            logger.info(f"[Gateway] 转发微信交互指令至 [{route['name']}] -> {target_url}: {msg.content}")
-                            import requests
-                            requests.post(target_url, json={"command": msg.content, "from_user": msg.from_user}, timeout=3)
-                    except Exception as e:
-                        logger.warning(f"[Gateway] 转发指令至 [{route['name']}] 异常: {e}")
-                    return
-            # 提交后台解密与处理 (Obsidian 笔记助手)
-            self.server_instance.handle_incoming_xml(msg_signature, timestamp, nonce, post_body)
+            logger.info(f"[Gateway] 收到微信 POST 回调: 报文长度 {len(post_body)} 字节")
+
+            # 候选密钥集合 (优先匹配多应用网关路由，再匹配 Obsidian 笔记助手)
+            crypt_candidates = self.server_instance.gateway_routes + [
+                {"name": "Obsidian 笔记助手 (1000003)", "port": None, "crypt": self.server_instance.crypt}
+            ]
+
+            decrypted_xml = None
+            matched_cand = None
+            for cand in crypt_candidates:
+                try:
+                    decrypted_xml = cand["crypt"].decrypt_msg(msg_signature, timestamp, nonce, post_body)
+                    matched_cand = cand
+                    logger.info(f"[Gateway] 成功使用 [{cand['name']}] 密钥解密微信消息！")
+                    break
+                except Exception:
+                    continue
+
+            if not decrypted_xml:
+                logger.error(f"[Gateway] 所有已知应用密钥均无法解密该消息！请检查微信后台 Token 与 EncodingAESKey。body 摘要: {post_body[:100]}...")
+                return
+
+            # 解析解密后的 XML 报文
+            import xml.etree.ElementTree as ET
+            try:
+                root = ET.fromstring(decrypted_xml)
+                agent_id = (root.findtext("AgentID") or "").strip()
+            except Exception:
+                agent_id = ""
+
+            msg = MessageParser.parse_xml(decrypted_xml)
+            logger.info(f"[Gateway] 报文解析成功: AgentID={agent_id or '未显式标注'}, MsgType={msg.msg_type if msg else 'None'}, Content={msg.content if msg else ''}")
+
+            # 路由分发决策
+            if agent_id == "1000002" or (matched_cand and matched_cand.get("port") == 8087):
+                self._forward_command("http://127.0.0.1:8087/command", "邮件通知助手", msg)
+            elif agent_id == "1000004" or (matched_cand and matched_cand.get("port") == 8085):
+                self._forward_command("http://127.0.0.1:8085/command", "社交雷达", msg)
+            elif agent_id == "1000005" or (matched_cand and matched_cand.get("port") == 8086):
+                self._forward_command("http://127.0.0.1:8086/command", "洞察引擎", msg)
+            else:
+                # 提交给 Obsidian 笔记助手异步入库处理
+                if msg:
+                    logger.info(f"[Gateway] 投递给 Obsidian 笔记助手处理: {msg.content[:30]}")
+                    self.server_instance.executor.submit(self.server_instance._process_message_async, msg)
             return
 
         # 2. Obsidian 插件确认同步完成: POST /api/sync/ack
