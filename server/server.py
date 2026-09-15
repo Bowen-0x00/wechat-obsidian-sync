@@ -38,13 +38,26 @@ class WeChatObsidianServer:
         self.token = wc["token"]
         self.encoding_aes_key = wc["encoding_aes_key"]
         self.open_kfid = wc.get("open_kfid", "")
-
         self.crypt = WXBizMsgCrypt(self.token, self.encoding_aes_key, self.corp_id)
         
-        compat_token = wc.get("compat_token")
-        compat_key = wc.get("compat_aes_key")
-        self.compat_crypt = WXBizMsgCrypt(compat_token, compat_key, self.corp_id) if (compat_token and compat_key) else None
-
+        # 统一多应用回调转发路由表 (邮件通知 1000002, 社交雷达 1000004, 洞察引擎 1000005)
+        self.gateway_routes = [
+            {
+                "name": "邮件通知 (1000002)",
+                "port": 8087,
+                "crypt": WXBizMsgCrypt("dPSAGVIQMAJmoNgon62TYDi", "0hauE4dK6GN4hPUBA5M15LvoGZyMkV9PcabQPH8gtR8", self.corp_id)
+            },
+            {
+                "name": "社交雷达 (1000004)",
+                "port": 8085,
+                "crypt": WXBizMsgCrypt("JyyBkfqOUshWB6nHbUdW4UiqRibSaB", "5oSnf2sWi9JeySMrwAK7HanS9rV8tJzEbec5zQHYLCC", self.corp_id)
+            },
+            {
+                "name": "洞察引擎 (1000005)",
+                "port": 8086,
+                "crypt": WXBizMsgCrypt("Bfj3VGVeKysV5Q9koJg6TUs9MFwj", "IVxJFR8Ae4jhJmwmcmA0AJm8O2mIgEsYTqoSUGBeShX", self.corp_id)
+            }
+        ]
         lc = self.cfg.get("llm", {})
         self.llm = LLMEnhancer(
             base_url=lc.get("base_url", ""),
@@ -289,19 +302,18 @@ class RequestHandler(BaseHTTPRequestHandler):
                         return
                     except Exception as e:
                         logger.error(f"[Server] 解密失败: {e}")
-
-                # 兼容旧应用配置
-                if self.server_instance.compat_crypt and self.server_instance.compat_crypt.verify_signature(timestamp, nonce, echostr, msg_signature):
-                    try:
-                        msg, _ = self.server_instance.compat_crypt.decrypt(echostr)
-                        self.send_response(200)
-                        self.send_header("Content-Type", "text/plain; charset=utf-8")
-                        self.end_headers()
-                        self.wfile.write(msg.encode("utf-8"))
-                        return
-                    except Exception:
-                        pass
-
+                for route in self.server_instance.gateway_routes:
+                    if route["crypt"].verify_signature(timestamp, nonce, echostr, msg_signature):
+                        try:
+                            msg, _ = route["crypt"].decrypt(echostr)
+                            logger.info(f"[Gateway] 成功响应 [{route['name']}] 握手验证")
+                            self.send_response(200)
+                            self.send_header("Content-Type", "text/plain; charset=utf-8")
+                            self.end_headers()
+                            self.wfile.write(msg.encode("utf-8"))
+                            return
+                        except Exception:
+                            pass
                 self.send_response(403)
                 self.end_headers()
                 self.wfile.write(b"Invalid signature")
@@ -365,19 +377,20 @@ class RequestHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b"success")
 
-            # 检查是否是邮件助手 (1000002) 的微信指令消息
-            if self.server_instance.compat_crypt and self.server_instance.compat_crypt.verify_signature(timestamp, nonce, post_body, msg_signature):
-                try:
-                    decrypted_xml = self.server_instance.compat_crypt.decrypt_msg(msg_signature, timestamp, nonce, post_body)
-                    msg = MessageParser.parse_xml(decrypted_xml)
-                    if msg and msg.content:
-                        logger.info(f"[Server] 转发邮件助手微信交互指令 -> http://127.0.0.1:8087/command: {msg.content}")
-                        import requests
-                        requests.post("http://127.0.0.1:8087/command", json={"command": msg.content, "from_user": msg.from_user}, timeout=3)
-                except Exception as e:
-                    logger.warning(f"[Server] 转发邮件助手指令异常: {e}")
-                return
-
+            # 检查是否为其他自建应用 (邮件通知 1000002, 社交雷达 1000004, 洞察引擎 1000005) 的指令
+            for route in self.server_instance.gateway_routes:
+                if route["crypt"].verify_signature(timestamp, nonce, post_body, msg_signature):
+                    try:
+                        decrypted_xml = route["crypt"].decrypt_msg(msg_signature, timestamp, nonce, post_body)
+                        msg = MessageParser.parse_xml(decrypted_xml)
+                        if msg and msg.content:
+                            target_url = f"http://127.0.0.1:{route['port']}/command"
+                            logger.info(f"[Gateway] 转发微信交互指令至 [{route['name']}] -> {target_url}: {msg.content}")
+                            import requests
+                            requests.post(target_url, json={"command": msg.content, "from_user": msg.from_user}, timeout=3)
+                    except Exception as e:
+                        logger.warning(f"[Gateway] 转发指令至 [{route['name']}] 异常: {e}")
+                    return
             # 提交后台解密与处理 (Obsidian 笔记助手)
             self.server_instance.handle_incoming_xml(msg_signature, timestamp, nonce, post_body)
             return
