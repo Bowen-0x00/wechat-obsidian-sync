@@ -15,24 +15,24 @@ class WeChatMessage:
     from_user: str
     create_time: int
     content: str = ""               # 文本正文
+    content_html: str = ""          # 文章 HTML 或 Markdown 正文
     title: str = ""                 # 链接标题或文件名
     description: str = ""           # 链接描述
     url: str = ""                   # 网页链接
     pic_url: str = ""               # 图片或图文封面链接
     media_id: str = ""              # 多媒体素材 ID
+    image_urls: List[str] = field(default_factory=list) # 文章内嵌或消息图片URL列表
     event: str = ""                 # 事件名，如 kf_msg_or_event
     event_token: str = ""           # 客服拉取凭据 Token
     open_kfid: str = ""             # 客服 ID
     embedded_urls: List[str] = field(default_factory=list)
-
 class MessageParser:
     """微信 XML 消息解析器."""
 
-    URL_PATTERN = re.compile(r'https?://[^\s<>"]+|www\.[^\s<>"]+', re.IGNORECASE)
-
+    # 兼容微信分享带换行、带前缀“http://”或“https://”以及各种中英文符号
+    URL_PATTERN = re.compile(r'(https?://[^\s<>"\'\(\)]+)', re.IGNORECASE)
     @classmethod
     def parse_xml(cls, xml_text: str) -> Optional[WeChatMessage]:
-        """将解密后的 XML 字符串解析为 WeChatMessage."""
         try:
             root = ET.fromstring(xml_text)
             
@@ -58,17 +58,19 @@ class MessageParser:
             event = get_text("Event")
             event_token = get_text("Token")
             open_kfid = get_text("OpenKfId")
-            # 文本消息特殊处理：如果用户发送的纯文本是一串链接（如直接粘贴公众号链接）
+            # 文本消息特殊处理：如果用户发送的文本中包含链接（如直接粘贴或分享公众号链接）
             embedded_urls = []
             if msg_type == "text" and content:
-                urls = cls.URL_PATTERN.findall(content)
+                # 清理 HTML 转义（例如 &amp; -> &）
+                import html
+                content_unescaped = html.unescape(content)
+                urls = cls.URL_PATTERN.findall(content_unescaped)
                 if urls:
                     embedded_urls = urls
-                    # 如果文本几乎全是一条链接，自动升格具备 link 属性
-                    if not url and len(urls) == 1 and (len(content) - len(urls[0])) < 10:
+                    # 只要包含 URL，优先提取第一个作为主要 target url
+                    if not url:
                         url = urls[0]
-                        logger.info(f"[Parser] 纯文本自动识别为网页长链接: {url}")
-
+                        logger.info(f"[Parser] 文本消息提取到链接: {url}")
             msg = WeChatMessage(
                 msg_id=msg_id,
                 msg_type=msg_type,

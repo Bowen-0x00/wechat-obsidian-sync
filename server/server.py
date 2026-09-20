@@ -106,9 +106,19 @@ class WeChatObsidianServer:
         if self.storage.is_msg_processed(msg.msg_id):
             logger.debug(f"[Server] 消息已处理过，跳过: {msg.msg_id}")
             return
-
         logger.info(f"[Server] 开始异步处理新微信消息 ({msg.msg_type}): {msg.title or msg.content[:30]}")
 
+        # 检查是否为控制指令 (/help, /status, /llm)
+        cmd_text = msg.content.strip().lower() if msg.msg_type == "text" else ""
+        if cmd_text in ("/help", "／help", "help", "帮助", "/h"):
+            self._handle_help_command(msg)
+            return
+        elif cmd_text in ("/status", "／status", "status", "状态", "/s"):
+            self._handle_status_command(msg)
+            return
+        elif cmd_text.startswith(("/llm", "／llm")):
+            self._handle_llm_chat_command(msg)
+            return
         title = msg.title
         author = ""
         url = msg.url
@@ -117,22 +127,25 @@ class WeChatObsidianServer:
         key_points = []
         tags = []
         media_filename = ""
+        content_markdown = ""
+        image_urls = []
 
-        # 1. 链接/文章类型 (或正文就是一条 URL)
-        if msg.msg_type == "link" or (msg.msg_type == "text" and msg.url):
-            target_url = msg.url
+        # 1. 链接/文章类型 (或正文包含 URL)
+        if msg.msg_type == "link" or msg.url or (msg.msg_type == "text" and msg.embedded_urls):
+            target_url = msg.url or (msg.embedded_urls[0] if msg.embedded_urls else "")
             logger.info(f"[Server] 抓取网页正文: {target_url}")
             article = self.crawler.crawl(target_url, title_hint=msg.title)
             title = article.title or msg.title or "网页收藏"
             author = article.author
             url = article.url
+            content_markdown = article.content_markdown
+            image_urls = article.images
 
             # 调用大模型生成 100 字速读和标签
             ai_res = self.llm.summarize_article(title, article.content_text, url)
             tldr = ai_res.get("tldr", "")
             key_points = ai_res.get("key_points", [])
             tags = ai_res.get("tags", ["#文章收藏"])
-
         # 2. 纯文本闪念
         elif msg.msg_type == "text":
             title = "闪念随笔"
@@ -159,9 +172,10 @@ class WeChatObsidianServer:
             tldr=tldr,
             key_points=key_points,
             tags=tags,
-            media_filename=media_filename
+            media_filename=media_filename,
+            content_markdown=content_markdown,
+            image_urls=image_urls
         )
-
         # 发送微信确认
         confirm_text = f"✅ 已成功收录至 Obsidian (ID: {note_id})\n"
         if title and title != "闪念随笔":
@@ -200,18 +214,36 @@ class WeChatObsidianServer:
             tldr = ""
             key_points = []
             tags = []
-            media_filename = ""
+            content_markdown = ""
+            image_urls = []
 
             # 文本类型
             if msg_type == "text":
                 raw_content = m.get("text", {}).get("content", "")
-                # 检查是否是粘贴的网页 URL
-                urls = MessageParser.URL_PATTERN.findall(raw_content)
-                if urls and len(urls) == 1 and (len(raw_content) - len(urls[0])) < 15:
+                cmd_raw = raw_content.strip().lower()
+                if cmd_raw in ("/help", "／help", "help", "帮助", "/h"):
+                    kf_cmd_msg = WeChatMessage(msg_id=msg_id, msg_type="text", from_user=from_user, create_time=send_time, content=raw_content)
+                    self._handle_help_command(kf_cmd_msg, is_kf=True, kfid=kfid)
+                    continue
+                elif cmd_raw in ("/status", "／status", "status", "状态", "/s"):
+                    kf_cmd_msg = WeChatMessage(msg_id=msg_id, msg_type="text", from_user=from_user, create_time=send_time, content=raw_content)
+                    self._handle_status_command(kf_cmd_msg, is_kf=True, kfid=kfid)
+                    continue
+                elif cmd_raw.startswith(("/llm", "／llm")):
+                    kf_cmd_msg = WeChatMessage(msg_id=msg_id, msg_type="text", from_user=from_user, create_time=send_time, content=raw_content)
+                    self._handle_llm_chat_command(kf_cmd_msg, is_kf=True, kfid=kfid)
+                    continue
+                # 检查是否包含网页 URL
+                import html
+                content_clean = html.unescape(raw_content)
+                urls = MessageParser.URL_PATTERN.findall(content_clean)
+                if urls:
                     url = urls[0]
                     article = self.crawler.crawl(url)
                     title = article.title or "网页收藏"
                     author = article.author
+                    content_markdown = article.content_markdown
+                    image_urls = article.images
                     ai_res = self.llm.summarize_article(title, article.content_text, url)
                     tldr = ai_res.get("tldr", "")
                     key_points = ai_res.get("key_points", [])
@@ -229,11 +261,12 @@ class WeChatObsidianServer:
                 article = self.crawler.crawl(url, title_hint=title)
                 title = article.title or title or "微信文章收藏"
                 author = article.author
+                content_markdown = article.content_markdown
+                image_urls = article.images
                 ai_res = self.llm.summarize_article(title, article.content_text, url)
                 tldr = ai_res.get("tldr", "")
                 key_points = ai_res.get("key_points", [])
                 tags = ai_res.get("tags", ["#文章收藏"])
-
             # 图片类型
             elif msg_type == "image":
                 title = "图片备忘"
@@ -255,7 +288,9 @@ class WeChatObsidianServer:
                 tldr=tldr,
                 key_points=key_points,
                 tags=tags,
-                media_filename=media_filename
+                media_filename=media_filename,
+                content_markdown=content_markdown,
+                image_urls=image_urls
             )
 
             # 客服会话内回复确认
@@ -268,6 +303,134 @@ class WeChatObsidianServer:
                 confirm_text += f"🏷️ 标签: {' '.join(tags)}"
 
             self.wecom_client.send_kf_reply(from_user, kfid, confirm_text.strip())
+    def _handle_llm_chat_command(self, msg: WeChatMessage, is_kf: bool = False, kfid: str = ""):
+        """处理 /llm 交互追问命令."""
+        text = msg.content.strip()
+        # 去除前缀 /llm 或 ／llm
+        if text.startswith(("/llm", "／llm")):
+            text = text[4:].strip()
+
+        # 解析命令参数: [/llm] [target] <question>
+        parts = text.split(maxsplit=1)
+        if not parts:
+            help_text = (
+                "💡 【/llm 笔记追问指南】\n"
+                "• /llm <问题> (默认追问最近一篇笔记)\n"
+                "• /llm last <问题> (追问最近一篇笔记)\n"
+                "• /llm <ID> <问题> (追问指定 ID 笔记，如 /llm 17 ...)\n"
+                "• /llm <时间> <问题> (如 /llm 20260920 或 /llm 202609202157 ...)\n"
+                "• /llm history (查看上一篇笔记的概况与历史)"
+            )
+            self._reply_user(msg.from_user, help_text, is_kf, kfid)
+            return
+
+        first_token = parts[0].strip().lower()
+        if first_token in ("last", "latest") or first_token.isdigit() or (len(first_token) >= 8 and first_token.isalnum()):
+            target = first_token
+            question = parts[1].strip() if len(parts) > 1 else ""
+        else:
+            # 用户直接输入了问题，如: /llm 核心观点是什么？
+            target = "last"
+            question = text
+
+        note = self.storage.get_note_by_target(target, from_user=msg.from_user)
+        if not note:
+            reply_text = f"❌ 未找到对应的笔记或文章 (查询目标: '{target}')。\n请确认笔记 ID 是否正确，或发送 /llm 查看帮助。"
+            self._reply_user(msg.from_user, reply_text, is_kf, kfid)
+            return
+
+        note_id = note["id"]
+        note_title = note["title"] or "未命名笔记"
+
+        # 如果用户只输入了 /llm id 或 /llm history 而没有问题，返回基本概况
+        if not question or question.lower() == "history":
+            history = self.storage.get_chat_history(note_id, limit=6)
+            info_text = f"📄 当前选中笔记 [ID: {note_id}]: 《{note_title}》\n"
+            if note["author"]:
+                info_text += f"👤 作者: {note['author']}\n"
+            if note["tldr"]:
+                info_text += f"💡 核心速读: {note['tldr']}\n"
+            info_text += f"\n💬 已有追问历史: {len(history)} 条消息。\n您可以发送：/llm {note_id} 您的具体问题"
+            self._reply_user(msg.from_user, info_text, is_kf, kfid)
+            return
+
+        logger.info(f"[LLM Chat] 用户 {msg.from_user} 追问笔记 [ID: {note_id}] 《{note_title}》: {question}")
+        
+        # 获取对话历史并生成回复
+        history = self.storage.get_chat_history(note_id, limit=6)
+        answer = self.llm.chat_with_note(note, question, history)
+
+        # 固化本轮问答到数据库
+        self.storage.add_chat_message(note_id, msg.from_user, "user", question)
+        self.storage.add_chat_message(note_id, msg.from_user, "assistant", answer)
+
+        # 组装微信端回复（兼顾 2048 字节限制）
+        reply_msg = (
+            f"🤖 【AI 深度追问】[ID: {note_id}]\n"
+            f"📄 《{note_title}》\n"
+            f"❓ 问: {question}\n\n"
+            f"💡 答:\n{answer}"
+        )
+        self._reply_user(msg.from_user, reply_msg.strip(), is_kf, kfid)
+
+    def _reply_user(self, to_user: str, text: str, is_kf: bool = False, kfid: str = ""):
+        """统一发送微信/客服回复."""
+        if is_kf and kfid:
+            self.wecom_client.send_kf_reply(to_user, kfid, text)
+        else:
+            self.wecom_client.send_confirmation(to_user, text)
+    def _handle_help_command(self, msg: WeChatMessage, is_kf: bool = False, kfid: str = ""):
+        """返回笔记助手的完整使用手册."""
+        help_text = (
+            "📖 **Obsidian 笔记助手交互手册**\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "🔹 **核心剪藏功能**:\n"
+            "• 直接发送微信文章链接: 自动抓取标题、作者、正文排版并下载图片\n"
+            "• 发送普通文本/闪念: 自动归档并打上精炼标签\n"
+            "• 发送图片: 自动保存原图并关联至 Obsidian 附件\n\n"
+            "🔹 **AI 深度追问与多轮对话**:\n"
+            "• `/llm <问题>`: 对最新收录的一篇笔记/文章发起深度追问\n"
+            "• `/llm last <问题>`: 追问最近一篇笔记\n"
+            "• `/llm <ID> <问题>`: 追问指定 ID 笔记 (如 `/llm 17 ...`)\n"
+            "• `/llm <时间> <问题>`: 按日期追问 (如 `/llm 20260920 ...`)\n"
+            "• `/llm history`: 查看当前选中笔记的概况与已有追问历史\n\n"
+            "🔹 **系统状态**:\n"
+            "• `/status` 或 `状态`: 检查笔记收件箱状态、已入库数量与同步情况"
+        )
+        self._reply_user(msg.from_user, help_text, is_kf, kfid)
+
+    def _handle_status_command(self, msg: WeChatMessage, is_kf: bool = False, kfid: str = ""):
+        """返回笔记收件箱与服务运行状态看板."""
+        with self.storage._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*), SUM(CASE WHEN is_synced=0 THEN 1 ELSE 0 END), SUM(CASE WHEN is_synced=1 THEN 1 ELSE 0 END) FROM inbox_notes")
+            total, unsynced, synced = cur.fetchone()
+            total = total or 0
+            unsynced = unsynced or 0
+            synced = synced or 0
+
+            cur.execute("SELECT id, title, created_at FROM inbox_notes ORDER BY id DESC LIMIT 1")
+            latest = cur.fetchone()
+
+        latest_info = f"《{latest['title']}》 (ID: {latest['id']}, {latest['created_at']})" if latest else "暂无记录"
+
+        llm_cfg = self.cfg.get("llm", {})
+        llm_model = llm_cfg.get("model", "deepseek-chat")
+        llm_enable = "🟢 启用" if self.llm.enable else "🔴 停用"
+
+        status_text = (
+            "📊 **Obsidian 笔记助手系统状态**\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            f"🟢 **服务状态**: 守护运行中 (端口: {self.port})\n"
+            f"🤖 **大模型引擎**: `{llm_model}` ({llm_enable})\n\n"
+            "📚 **收件箱数据库统计**:\n"
+            f"• 累计收录笔记: **{total}** 条\n"
+            f"• 待同步落盘: **{unsynced}** 条\n"
+            f"• 已同步至本地: **{synced}** 条\n\n"
+            f"📄 **最近收录笔记**: {latest_info}\n\n"
+            "💡 发送 `/help` 查看操作指南；发送 `/llm <问题>` 即可继续追问最近一篇笔记！"
+        )
+        self._reply_user(msg.from_user, status_text, is_kf, kfid)
 class RequestHandler(BaseHTTPRequestHandler):
     server_instance: WeChatObsidianServer = None
 

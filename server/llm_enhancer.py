@@ -113,6 +113,76 @@ class LLMEnhancer:
         except Exception as e:
             logger.error(f"[LLM] 闪念打标签异常: {e}")
             return ["#随想"]
+    def chat_with_note(
+        self,
+        note: Dict[str, Any],
+        question: str,
+        history: Optional[List[Dict[str, str]]] = None
+    ) -> str:
+        """基于特定笔记的完整上下文与追问历史进行智能解答."""
+        if not self.enable:
+            return "⚠️ LLM 增强引擎未启用，请在 config.yaml 中配置 api_key。"
+
+        title = note.get("title") or "未命名笔记"
+        author = note.get("author") or ""
+        url = note.get("url") or ""
+        tldr = note.get("tldr") or ""
+        key_points = note.get("key_points") or []
+        content = note.get("content_markdown") or note.get("raw_content") or ""
+
+        # 组装文章上下文
+        context_parts = [
+            f"【文章/笔记标题】: {title}",
+        ]
+        if author:
+            context_parts.append(f"【作者/来源】: {author}")
+        if url:
+            context_parts.append(f"【原始链接】: {url}")
+        if tldr:
+            context_parts.append(f"【前期核心速读】: {tldr}")
+        if key_points:
+            context_parts.append(f"【前期要点】: " + "；".join(key_points))
+        if content:
+            # 控制在 6000 字符以内，留足 token 给对话
+            context_parts.append(f"【正文参考】:\n{content[:6000]}")
+
+        doc_context = "\n".join(context_parts)
+
+        system_prompt = f"""你是一位深度的个人知识助理与学术/技术阅读助手。
+请基于以下用户收录的笔记/文章内容，回答用户的追问。
+
+--- 笔记上下文 ---
+{doc_context}
+--- 结束 ---
+
+回答要求：
+1. 严格依据上述笔记内容与事实作答；如笔记中未提及，请明确说明。
+2. 语言条理清晰，层次分明，逻辑严密，适合企业微信或手机端阅读。
+3. 尽量控制在 500 字以内，避免冗长废话，突出要点。"""
+
+        messages = [{"role": "system", "content": system_prompt}]
+
+        # 拼接最近历史追问
+        if history:
+            for item in history[-6:]:  # 最多保留最近 3 轮追问
+                r = item.get("role", "user")
+                c = item.get("content", "")
+                if r in ("user", "assistant") and c:
+                    messages.append({"role": r, "content": c})
+
+        messages.append({"role": "user", "content": question})
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=self.temperature
+            )
+            ans = response.choices[0].message.content or "未能获取回答，请重试。"
+            return ans.strip()
+        except Exception as e:
+            logger.error(f"[LLM] 对话追问异常: {e}")
+            return f"⚠️ 追问回答生成失败: {e}"
 
     def _parse_json(self, text: str) -> Dict[str, Any]:
         """容错解析 JSON 字符串."""

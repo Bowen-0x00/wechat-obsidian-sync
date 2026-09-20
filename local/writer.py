@@ -49,34 +49,56 @@ class ObsidianWriter:
             os.makedirs(os.path.dirname(target_path), exist_ok=True)
             return target_path
 
-    def download_image_to_vault(self, media_filename: str) -> Optional[str]:
-        """从云端服务器下载图片到 Vault 附件目录，返回 Obsidian 引用路径."""
-        if not media_filename:
+    def download_image_to_vault(self, media_filename_or_url: str) -> Optional[str]:
+        """下载图片（云端附件或文章外链图片）到 Vault 附件目录，返回 Obsidian 引用路径."""
+        if not media_filename_or_url:
             return None
 
         images_dir = os.path.join(self.vault_path, self.attachment_folder)
         os.makedirs(images_dir, exist_ok=True)
-        local_dest = os.path.join(images_dir, media_filename)
 
+        # 判断是云端本地文件名还是外部图片链接
+        if media_filename_or_url.startswith(("http://", "https://")):
+            import hashlib
+            # 生成稳定的本地文件名，并尽量保留扩展名
+            url_hash = hashlib.md5(media_filename_or_url.encode("utf-8")).hexdigest()[:12]
+            ext = ".png"
+            if ".jpg" in media_filename_or_url or "wx_fmt=jpeg" in media_filename_or_url:
+                ext = ".jpg"
+            elif ".gif" in media_filename_or_url or "wx_fmt=gif" in media_filename_or_url:
+                ext = ".gif"
+            elif ".webp" in media_filename_or_url or "wx_fmt=webp" in media_filename_or_url:
+                ext = ".webp"
+            filename = f"art_img_{url_hash}{ext}"
+            img_url = media_filename_or_url
+        else:
+            filename = media_filename_or_url
+            img_url = f"{self.server_base_url}/api/image/{filename}"
+
+        local_dest = os.path.join(images_dir, filename)
         if not os.path.exists(local_dest):
             try:
-                img_url = f"{self.server_base_url}/api/image/{media_filename}"
-                r = requests.get(img_url, timeout=15)
+                headers = {
+                    "User-Agent": (
+                        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 "
+                        "(KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.48"
+                    ),
+                    "Referer": "https://mp.weixin.qq.com/"
+                }
+                r = requests.get(img_url, headers=headers, timeout=15)
                 if r.status_code == 200:
                     with open(local_dest, "wb") as f:
                         f.write(r.content)
-                    logger.info(f"[Writer] 附件下载成功: {media_filename}")
+                    logger.info(f"[Writer] 附件/内嵌图片下载成功: {filename}")
                 else:
-                    logger.warning(f"[Writer] 附件下载失败 (HTTP {r.status_code}): {img_url}")
+                    logger.warning(f"[Writer] 图片下载失败 (HTTP {r.status_code}): {img_url}")
                     return None
             except Exception as e:
                 logger.error(f"[Writer] 下载附件异常: {e}")
                 return None
 
-        # 返回 Obsidian 内部链接路径，如 ![[10-Journal&Planning/13-note/images/wx_img_123.jpg]]
-        vault_rel_path = f"{self.attachment_folder}/{media_filename}".replace("\\", "/")
-        return f"![[{vault_rel_path}|缩略图]]"
-
+        vault_rel_path = f"{self.attachment_folder}/{filename}".replace("\\", "/")
+        return f"![[{vault_rel_path}]]"
     def format_note_markdown(self, note: Dict[str, Any]) -> str:
         """将笔记字典格式化为规范的 Markdown 片段."""
         create_time = note.get("create_time") or int(datetime.now().timestamp())
@@ -92,7 +114,8 @@ class ObsidianWriter:
         key_points = note.get("key_points", [])
         tags = note.get("tags", [])
         media_filename = note.get("media_filename", "")
-
+        content_markdown = note.get("content_markdown", "")
+        image_urls = note.get("image_urls", [])
         tags_str = " ".join(tags) if tags else ""
 
         blocks = []
@@ -124,6 +147,20 @@ class ObsidianWriter:
                 if img_link:
                     blocks.append(f"\n{img_link}")
 
+            # 渲染文章完整正文与图片
+            if content_markdown:
+                # 将文章中的外链图片下载到本地并替换为 Obsidian 内部引用 ![[...]]
+                processed_md = content_markdown
+                img_pattern = re.compile(r'!\[(.*?)\]\((https?://[^\s\)]+)\)')
+                found_imgs = img_pattern.findall(processed_md)
+                for alt, img_src in found_imgs:
+                    local_obsidian_img = self.download_image_to_vault(img_src)
+                    if local_obsidian_img:
+                        processed_md = processed_md.replace(f"![{alt}]({img_src})", local_obsidian_img)
+
+                blocks.append(f"\n### 📖 正文内容\n\n{processed_md}")
+            elif raw_content and raw_content != url:
+                blocks.append(f"\n> {raw_content.strip()}")
         # 2. 图片类型
         elif msg_type == "image":
             blocks.append("#### 🖼️ 图片备忘")

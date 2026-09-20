@@ -164,6 +164,9 @@ class WeChatObsidianPlugin extends Plugin {
       }
       if (tagsStr) block += `\n${tagsStr}\n`;
       if (imageMarkdown) block += `${imageMarkdown}\n`;
+      if (note.content_markdown) {
+        block += `\n### 📖 正文内容\n\n${note.content_markdown}\n`;
+      }
     } else if (note.msg_type === 'image') {
       block += `#### 🖼️ 图片备忘\n`;
       block += `## 📅 ${timeStr}\n`;

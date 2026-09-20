@@ -40,11 +40,34 @@ class InboxStorage:
                 key_points TEXT,              -- AI 核心要点 (JSON 字符串)
                 tags TEXT,                    -- 标签列表 (JSON 字符串)
                 media_filename TEXT,          -- 图片或文件本地文件名
+                content_markdown TEXT,        -- 文章转换后的 Markdown 正文
+                image_urls TEXT,              -- 文章包含的所有图片链接 (JSON 字符串)
                 is_synced INTEGER DEFAULT 0,  -- 0: 待同步, 1: 已同步落盘
                 synced_at TIMESTAMP,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """)
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS note_chat_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                note_id INTEGER NOT NULL,
+                from_user TEXT,
+                role TEXT NOT NULL,           -- 'user', 'assistant'
+                content TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (note_id) REFERENCES inbox_notes(id)
+            )
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_note_id ON note_chat_history(note_id)")
+            # 自动迁移旧数据库，添加 content_markdown 和 image_urls 字段
+            try:
+                cursor.execute("ALTER TABLE inbox_notes ADD COLUMN content_markdown TEXT")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                cursor.execute("ALTER TABLE inbox_notes ADD COLUMN image_urls TEXT")
+            except sqlite3.OperationalError:
+                pass
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_inbox_synced ON inbox_notes(is_synced)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_inbox_msg_id ON inbox_notes(msg_id)")
             conn.commit()
@@ -72,18 +95,20 @@ class InboxStorage:
         tldr: str = "",
         key_points: Optional[List[str]] = None,
         tags: Optional[List[str]] = None,
-        media_filename: str = ""
+        media_filename: str = "",
+        content_markdown: str = "",
+        image_urls: Optional[List[str]] = None
     ) -> int:
         """新增一条笔记到收件箱."""
         kp_json = json.dumps(key_points or [], ensure_ascii=False)
         tags_json = json.dumps(tags or [], ensure_ascii=False)
-
+        img_json = json.dumps(image_urls or [], ensure_ascii=False)
         with self._get_connection() as conn:
             cur = conn.cursor()
             cur.execute("""
             INSERT OR IGNORE INTO inbox_notes 
-            (msg_id, msg_type, from_user, create_time, raw_content, title, author, url, tldr, key_points, tags, media_filename, is_synced)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+            (msg_id, msg_type, from_user, create_time, raw_content, title, author, url, tldr, key_points, tags, media_filename, content_markdown, image_urls, is_synced)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
             """, (
                 msg_id,
                 msg_type,
@@ -96,7 +121,9 @@ class InboxStorage:
                 tldr,
                 kp_json,
                 tags_json,
-                media_filename
+                media_filename,
+                content_markdown,
+                img_json
             ))
             conn.commit()
             last_id = cur.lastrowid
@@ -108,9 +135,8 @@ class InboxStorage:
         with self._get_connection() as conn:
             cur = conn.cursor()
             cur.execute("""
-            SELECT id, msg_id, msg_type, from_user, create_time, raw_content, title, author, url, tldr, key_points, tags, media_filename, created_at
+            SELECT id, msg_id, msg_type, from_user, create_time, raw_content, title, author, url, tldr, key_points, tags, media_filename, content_markdown, image_urls, created_at
             FROM inbox_notes
-            WHERE is_synced = 0
             ORDER BY id ASC
             LIMIT ?
             """, (limit,))
@@ -132,9 +158,114 @@ class InboxStorage:
                     "key_points": json.loads(r["key_points"] or "[]"),
                     "tags": json.loads(r["tags"] or "[]"),
                     "media_filename": r["media_filename"] or "",
+                    "content_markdown": r["content_markdown"] or "",
+                    "image_urls": json.loads(r["image_urls"] or "[]"),
                     "created_at": r["created_at"]
                 })
             return notes
+
+    def get_note_by_target(self, target: str, from_user: str = "") -> Optional[Dict[str, Any]]:
+        """
+        根据标识查找特定笔记:
+        1. 'last' 或空 -> 用户最近一篇笔记（若未指定用户则取全局最新一篇）
+        2. 数字 -> 直接按 note_id 查找
+        3. 8位/12位时间字符串（如 20260920, 202609202157）-> 匹配对应时间段创建的笔记
+        """
+        target = target.strip().lower()
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            row = None
+
+            # 1. last
+            if target in ("last", "", "latest"):
+                if from_user:
+                    cur.execute("""
+                    SELECT * FROM inbox_notes 
+                    WHERE from_user = ? 
+                    ORDER BY id DESC LIMIT 1
+                    """, (from_user,))
+                    row = cur.fetchone()
+                if not row:
+                    cur.execute("SELECT * FROM inbox_notes ORDER BY id DESC LIMIT 1")
+                    row = cur.fetchone()
+
+            # 2. 纯数字 ID
+            elif target.isdigit() and len(target) < 8:
+                cur.execute("SELECT * FROM inbox_notes WHERE id = ?", (int(target),))
+                row = cur.fetchone()
+
+            # 3. 日期或时间戳匹配 (如 20260920 或 202609202157 或 2026-09-20)
+            else:
+                clean_dt = target.replace("-", "").replace(":", "").replace(" ", "").replace("_", "")
+                if len(clean_dt) == 8: # YYYYMMDD
+                    date_pattern = f"{clean_dt[:4]}-{clean_dt[4:6]}-{clean_dt[6:8]}%"
+                    cur.execute("""
+                    SELECT * FROM inbox_notes 
+                    WHERE created_at LIKE ? 
+                    ORDER BY id DESC LIMIT 1
+                    """, (date_pattern,))
+                    row = cur.fetchone()
+                elif len(clean_dt) >= 12: # YYYYMMDDHHMM
+                    date_pattern = f"{clean_dt[:4]}-{clean_dt[4:6]}-{clean_dt[6:8]} {clean_dt[8:10]}:{clean_dt[10:12]}%"
+                    cur.execute("""
+                    SELECT * FROM inbox_notes 
+                    WHERE created_at LIKE ? 
+                    ORDER BY id DESC LIMIT 1
+                    """, (date_pattern,))
+                    row = cur.fetchone()
+                else:
+                    # 模糊标题匹配
+                    cur.execute("""
+                    SELECT * FROM inbox_notes 
+                    WHERE title LIKE ? OR raw_content LIKE ? 
+                    ORDER BY id DESC LIMIT 1
+                    """, (f"%{target}%", f"%{target}%"))
+                    row = cur.fetchone()
+
+            if not row:
+                return None
+
+            return {
+                "id": row["id"],
+                "msg_id": row["msg_id"],
+                "msg_type": row["msg_type"],
+                "from_user": row["from_user"],
+                "create_time": row["create_time"],
+                "raw_content": row["raw_content"] or "",
+                "title": row["title"] or "",
+                "author": row["author"] or "",
+                "url": row["url"] or "",
+                "tldr": row["tldr"] or "",
+                "key_points": json.loads(row["key_points"] or "[]"),
+                "tags": json.loads(row["tags"] or "[]"),
+                "media_filename": row["media_filename"] or "",
+                "content_markdown": row["content_markdown"] or "",
+                "image_urls": json.loads(row["image_urls"] or "[]"),
+                "created_at": row["created_at"]
+            }
+
+    def add_chat_message(self, note_id: int, from_user: str, role: str, content: str):
+        """记录追问对话历史."""
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+            INSERT INTO note_chat_history (note_id, from_user, role, content)
+            VALUES (?, ?, ?, ?)
+            """, (note_id, from_user, role, content))
+            conn.commit()
+
+    def get_chat_history(self, note_id: int, limit: int = 10) -> List[Dict[str, str]]:
+        """获取指定笔记的追问历史."""
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+            SELECT role, content FROM note_chat_history
+            WHERE note_id = ?
+            ORDER BY id ASC
+            LIMIT ?
+            """, (note_id, limit))
+            rows = cur.fetchall()
+            return [{"role": r["role"], "content": r["content"]} for r in rows]
 
     def mark_as_synced(self, note_ids: List[int]):
         """将指定的笔记标记为已同步."""
