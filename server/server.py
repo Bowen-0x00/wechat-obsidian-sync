@@ -83,6 +83,19 @@ class WeChatObsidianServer:
 
         # 异步线程池处理耗时的网络爬虫与大模型请求，避免阻塞微信回调
         self.executor = ThreadPoolExecutor(max_workers=8)
+    def _submit_background(self, func, *args):
+        """提交后台任务，并确保线程内异常不会被 Future 静默吞掉."""
+        future = self.executor.submit(func, *args)
+        future.add_done_callback(self._log_background_failure)
+        return future
+
+    @staticmethod
+    def _log_background_failure(future):
+        try:
+            future.result()
+        except Exception:
+            logger.exception("[Server] 后台消息处理失败")
+
 
     def handle_incoming_xml(self, msg_signature: str, timestamp: str, nonce: str, raw_xml: str):
         """同步解密后提交后台异步处理，立即返回 success 避免微信超时重试."""
@@ -90,8 +103,7 @@ class WeChatObsidianServer:
             decrypted_xml = self.crypt.decrypt_msg(msg_signature, timestamp, nonce, raw_xml)
             msg = MessageParser.parse_xml(decrypted_xml)
             if msg:
-                # 提交异步处理
-                self.executor.submit(self._process_message_async, msg)
+                self._submit_background(self._process_message_async, msg)
         except Exception as e:
             logger.error(f"[Server] 消息解密/解析失败: {e}")
 
@@ -216,6 +228,7 @@ class WeChatObsidianServer:
             tags = []
             content_markdown = ""
             image_urls = []
+            media_filename = ""
 
             # 文本类型
             if msg_type == "text":
@@ -598,7 +611,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 # 提交给 Obsidian 笔记助手异步入库处理
                 if msg:
                     logger.info(f"[Gateway] 投递给 Obsidian 笔记助手处理: {msg.content[:30]}")
-                    self.server_instance.executor.submit(self.server_instance._process_message_async, msg)
+                    self.server_instance._submit_background(self.server_instance._process_message_async, msg)
             return
 
         # 2. Obsidian 插件确认同步完成: POST /api/sync/ack
