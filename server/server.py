@@ -117,6 +117,15 @@ class WeChatObsidianServer:
         # 告警通知冷却字典 (防止短时间内重复刷屏报警)
         self.alert_cooldowns: Dict[str, float] = {}
 
+        # 异步线程池处理耗时的网络爬虫与大模型请求，避免阻塞微信回调
+        self.executor = ThreadPoolExecutor(max_workers=8)
+
+    def _submit_background(self, func, *args):
+        """提交后台任务，并确保线程内异常不会被 Future 静默吞掉."""
+        future = self.executor.submit(func, *args)
+        future.add_done_callback(self._log_background_failure)
+        return future
+
     def _notify_alert(
         self,
         alert_key: str,
@@ -147,15 +156,6 @@ class WeChatObsidianServer:
                 logger.error(f"[Alert] 发送微信告警通知失败: {e}")
 
         self._submit_background(_send)
-
-        # 异步线程池处理耗时的网络爬虫与大模型请求，避免阻塞微信回调
-        self.executor = ThreadPoolExecutor(max_workers=8)
-    def _submit_background(self, func, *args):
-        """提交后台任务，并确保线程内异常不会被 Future 静默吞掉."""
-        future = self.executor.submit(func, *args)
-        future.add_done_callback(self._log_background_failure)
-        return future
-
     @staticmethod
     def _log_background_failure(future):
         try:
