@@ -1,6 +1,7 @@
 """WeChat to Obsidian 云端核心服务 (消息接收解密 + AI 增强 + 同步 REST API)."""
 
 import os
+import re
 import json
 import yaml
 import time
@@ -8,14 +9,23 @@ import mimetypes
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse, parse_qs
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from typing import Optional, List, Dict, Any
 from loguru import logger
 
-from .wxcrypt import WXBizMsgCrypt
-from .parser import MessageParser, WeChatMessage
-from .crawler import ArticleCrawler
-from .llm_enhancer import LLMEnhancer
-from .storage import InboxStorage
-from .wechat_client import WeComClient
+try:
+    from .wxcrypt import WXBizMsgCrypt
+    from .parser import MessageParser, WeChatMessage
+    from .crawler import ArticleCrawler
+    from .llm_enhancer import LLMEnhancer
+    from .storage import InboxStorage
+    from .wechat_client import WeComClient
+except ImportError:
+    from wxcrypt import WXBizMsgCrypt
+    from parser import MessageParser, WeChatMessage
+    from crawler import ArticleCrawler
+    from llm_enhancer import LLMEnhancer
+    from storage import InboxStorage
+    from wechat_client import WeComClient
 
 
 class WeChatObsidianServer:
@@ -519,6 +529,115 @@ class WeChatObsidianServer:
             f"已热加载凭据（长度: {len(new_cookie)}），后续粘贴知乎链接将自动尝试拉取问答与专栏全文并排版。"
         )
         self._reply_user(msg.from_user, reply_msg, is_kf, kfid)
+    def process_clipped_content(
+        self,
+        raw_text: str,
+        custom_title: str = "",
+        extra_tags: Optional[List[str]] = None,
+        from_user: str = "quick_share"
+    ) -> Dict[str, Any]:
+        """处理手机快捷指令/系统分享直传的内容，完成爬取、LLM分析与入库."""
+        import html
+        raw_clean = html.unescape(raw_text.strip())
+        urls = MessageParser.URL_PATTERN.findall(raw_clean)
+
+        now_ts = int(time.time())
+        msg_id = f"clip_{now_ts}_{int(time.time() * 1000) % 10000}"
+
+        title = custom_title
+        author = ""
+        url = ""
+        tldr = ""
+        key_points = []
+        tags = list(extra_tags or [])
+        content_markdown = ""
+        image_urls = []
+        media_filename = ""
+        raw_content = raw_clean
+
+        if urls:
+            msg_type = "link"
+            url = urls[0]
+            user_note_text = re.sub(r'https?://[^\s<>"\'\(\)]+', '', raw_clean).strip()
+            title_hint = custom_title or (user_note_text[:40] if user_note_text else "")
+
+            logger.info(f"[Clip API] 提取到链接，开始抓取: {url}")
+            article = self.crawler.crawl(url, title_hint=title_hint)
+            title = custom_title or article.title or (user_note_text[:40] if user_note_text else "网页剪藏")
+            if title.startswith(("http://", "https://")) and (custom_title or user_note_text):
+                title = custom_title or user_note_text[:40]
+            author = article.author
+            url = article.url or url
+            image_urls = article.images
+
+            if article.content_markdown and len(article.content_markdown.strip()) > 30:
+                content_markdown = article.content_markdown
+                content_text = article.content_text
+                if user_note_text:
+                    content_markdown = f"> [!note] 随附笔记\n> {user_note_text}\n\n" + content_markdown
+            else:
+                content_text = user_note_text or title
+                if user_note_text:
+                    content_markdown = f"> [!quote] 剪藏摘要\n> {user_note_text}\n\n> 🔗 原文链接: [{title}]({url})\n"
+                else:
+                    content_markdown = f"> [!info] 剪藏链接\n> 🔗 [{title}]({url})\n> *(正文触发站点反爬防护，已自动记录链接与标题)*\n"
+
+            ai_res = self.llm.summarize_article(title, content_text, url)
+            tldr = ai_res.get("tldr", "")
+            key_points = ai_res.get("key_points", [])
+            for t in ai_res.get("tags", ["#剪藏"]):
+                if t not in tags:
+                    tags.append(t)
+        else:
+            msg_type = "text"
+            title = custom_title or "闪念随笔"
+            thought_tags = self.llm.tag_thought(raw_clean)
+            for t in thought_tags:
+                if t not in tags:
+                    tags.append(t)
+
+        note_id = self.storage.add_note(
+            msg_id=msg_id,
+            msg_type=msg_type,
+            from_user=from_user,
+            create_time=now_ts,
+            raw_content=raw_content,
+            title=title,
+            author=author,
+            url=url,
+            tldr=tldr,
+            key_points=key_points,
+            tags=tags,
+            media_filename=media_filename,
+            content_markdown=content_markdown,
+            image_urls=image_urls
+        )
+
+        logger.info(f"[Clip API] 快捷剪藏入库成功 [ID: {note_id}]: 《{title}》")
+
+        # 异步通过微信客服/应用给用户发一条推送提醒 (可选)
+        def _notify():
+            try:
+                notify_text = f"📱 **手机一键剪藏成功** (ID: {note_id})\n"
+                if title and title != "闪念随笔":
+                    notify_text += f"📄 《{title}》\n"
+                if tldr:
+                    notify_text += f"💡 核心速读: {tldr}\n"
+                if tags:
+                    notify_text += f"🏷️ 标签: {' '.join(tags)}"
+                self.wecom_client.send_confirmation("@all", notify_text.strip())
+            except Exception as e:
+                logger.debug(f"[Clip API] 发送微信通知跳过: {e}")
+
+        self._submit_background(_notify)
+
+        return {
+            "note_id": note_id,
+            "title": title,
+            "tldr": tldr,
+            "tags": tags
+        }
+
 
     def _reply_user(self, to_user: str, text: str, is_kf: bool = False, kfid: str = ""):
         """统一发送微信/客服回复."""
@@ -778,6 +897,68 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(json.dumps({"code": 400, "error": str(e)}).encode())
             return
+
+        # 3. 手机快捷指令 / 系统分享直传剪藏: POST /api/clip 或 POST /api/push
+        if parsed.path in ("/api/clip", "/api/push"):
+            if not self._check_auth(params):
+                self.send_response(401)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(json.dumps({"code": 401, "msg": "Unauthorized: API secret invalid"}).encode())
+                return
+
+            try:
+                raw_text = ""
+                custom_title = ""
+                extra_tags = []
+                from_user = "system_share"
+
+                content_type = self.headers.get("Content-Type", "")
+                if "application/json" in content_type:
+                    try:
+                        data = json.loads(post_body)
+                        raw_text = (data.get("content") or data.get("text") or data.get("url") or "").strip()
+                        custom_title = (data.get("title") or "").strip()
+                        extra_tags = data.get("tags") or []
+                        from_user = data.get("from_user") or from_user
+                    except Exception:
+                        raw_text = post_body.strip()
+                else:
+                    raw_text = post_body.strip()
+
+                if not raw_text:
+                    self.send_response(400)
+                    self.send_header("Content-Type", "application/json; charset=utf-8")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"code": 400, "msg": "Empty content"}).encode())
+                    return
+
+                res = self.server_instance.process_clipped_content(
+                    raw_text=raw_text,
+                    custom_title=custom_title,
+                    extra_tags=extra_tags,
+                    from_user=from_user
+                )
+
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(json.dumps({
+                    "code": 0,
+                    "msg": "Success",
+                    "note_id": res["note_id"],
+                    "title": res["title"],
+                    "tldr": res["tldr"],
+                    "tags": res["tags"]
+                }, ensure_ascii=False).encode())
+                return
+            except Exception as e:
+                logger.error(f"[Clip API] 剪藏处理失败: {e}")
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(json.dumps({"code": 500, "error": str(e)}).encode())
+                return
 
         self.send_response(404)
         self.end_headers()

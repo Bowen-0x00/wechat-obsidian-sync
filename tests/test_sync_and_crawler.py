@@ -103,3 +103,108 @@ def test_storage_reset_synced_status():
 
         storage.reset_synced_status()
         assert len(storage.get_unsynced_notes()) == 1
+
+
+def test_process_clipped_content_text_and_link():
+    """测试手机一键剪藏接口的入库与解析逻辑."""
+    from server import WeChatObsidianServer
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = os.path.join(tmpdir, "test_clip.db")
+        server = WeChatObsidianServer.__new__(WeChatObsidianServer)
+        server.storage = InboxStorage(db_path=db_path)
+        server.crawler = ArticleCrawler()
+        # mock llm & wecom
+        class DummyLLM:
+            enable = False
+            def summarize_article(self, title, text, url):
+                return {"tldr": f"速读: {title}", "key_points": ["要点1"], "tags": ["#剪藏"]}
+            def tag_thought(self, text):
+                return ["#闪念"]
+        class DummyWeCom:
+            def send_confirmation(self, *args, **kwargs):
+                pass
+        server.llm = DummyLLM()
+        server.wecom_client = DummyWeCom()
+        server.executor = None
+        server._submit_background = lambda fn, *args: None
+
+        # 1. 测试纯文字剪藏
+        res1 = server.process_clipped_content(raw_text="今天学习了存算一体架构与CXL", custom_title="学习备忘")
+        assert res1["note_id"] > 0
+        assert res1["title"] == "学习备忘"
+        assert "#闪念" in res1["tags"]
+
+        # 2. 测试带知乎链接的剪藏 (带随笔附注)
+        res2 = server.process_clipped_content(raw_text="这篇文章讲AI芯片很透彻 https://zhuanlan.zhihu.com/p/677041838")
+        assert res2["note_id"] > 0
+        assert "这篇文章讲AI芯片很透彻" in res2["title"]
+
+        # 3. 验证数据库中这两条笔记均待同步 (is_synced = 0)
+        unsynced = server.storage.get_unsynced_notes()
+        assert len(unsynced) == 2
+
+
+def test_http_clip_api_endpoint():
+    """测试 HTTP 层级的 /api/clip 接口 (鉴权、请求解析与响应格式)."""
+    import threading
+    import requests
+    from http.server import HTTPServer
+    from server import WeChatObsidianServer, RequestHandler
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = os.path.join(tmpdir, "test_http_clip.db")
+        server = WeChatObsidianServer.__new__(WeChatObsidianServer)
+        server.storage = InboxStorage(db_path=db_path)
+        server.crawler = ArticleCrawler()
+        server.api_secret = "test_secret_123"
+        server.port = 18999
+        class DummyLLM:
+            enable = False
+            def summarize_article(self, title, text, url):
+                return {"tldr": "速读测试", "key_points": [], "tags": ["#测试"]}
+            def tag_thought(self, text):
+                return ["#测试"]
+        class DummyWeCom:
+            def send_confirmation(self, *args, **kwargs):
+                pass
+        server.llm = DummyLLM()
+        server.wecom_client = DummyWeCom()
+        server.executor = None
+        server._submit_background = lambda fn, *args: None
+
+        RequestHandler.server_instance = server
+        httpd = HTTPServer(("127.0.0.1", 18999), RequestHandler)
+        th = threading.Thread(target=httpd.serve_forever, daemon=True)
+        th.start()
+
+        try:
+            # 1. 鉴权失败测试
+            r_fail = requests.post("http://127.0.0.1:18999/api/clip", json={"content": "测试"}, timeout=5)
+            assert r_fail.status_code == 401
+
+            # 2. 正常 JSON 剪藏
+            r_ok = requests.post(
+                "http://127.0.0.1:18999/api/clip?secret=test_secret_123",
+                json={"content": "这是从安卓剪藏的内容", "title": "自定义标题"},
+                timeout=5
+            )
+            assert r_ok.status_code == 200
+            data = r_ok.json()
+            assert data["code"] == 0
+            assert data["title"] == "自定义标题"
+            assert data["note_id"] > 0
+
+            # 3. 正常纯文本 POST 剪藏 (兼容各种简单快捷方式)
+            r_text = requests.post(
+                "http://127.0.0.1:18999/api/clip?secret=test_secret_123",
+                data="纯文本闪念备忘".encode("utf-8"),
+                headers={"Content-Type": "text/plain; charset=utf-8"},
+                timeout=5
+            )
+            assert r_text.status_code == 200
+            data_text = r_text.json()
+            assert data_text["code"] == 0
+            assert data_text["note_id"] > 0
+        finally:
+            httpd.shutdown()
