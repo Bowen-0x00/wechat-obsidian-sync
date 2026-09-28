@@ -14,7 +14,6 @@ REMOTE_DIR = os.environ.get("ALIYUN_DIR", "/root/wechat_obsidian")
 INCLUDE_ITEMS = [
     "server",
     "deploy",
-    "config.yaml",
     "requirements.txt"
 ]
 

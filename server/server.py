@@ -896,22 +896,44 @@ class WeChatObsidianServer:
 
         latest_info = f"《{latest['title']}》 (ID: {latest['id']}, {latest['created_at']})" if latest else "暂无记录"
 
-        llm_cfg = self.cfg.get("llm", {})
-        llm_model = llm_cfg.get("model", "deepseek-chat")
-        llm_enable = "🟢 启用" if self.llm.enable else "🔴 停用"
+        # 1. 真实测试大模型连通性与时延
+        llm_ok, llm_cost = self.llm.test_model(self.llm.model)
+        llm_badge = f"🟢 连通正常 (耗时: {llm_cost})" if llm_ok else f"🔴 接口异常 ({llm_cost})"
+
+        # 2. 真实测试知乎 Cookie 状态
+        cookie_badge = "⚪ 未配置凭据 (降级模式)"
+        if self.crawler.zhihu_cookie:
+            try:
+                import requests
+                headers = {
+                    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                    "x-requested-with": "fetch",
+                    "accept": "application/json, text/plain, */*",
+                    "cookie": self.crawler.zhihu_cookie
+                }
+                r_me = requests.get("https://www.zhihu.com/api/v4/me?include=is_realname", headers=headers, timeout=5)
+                if r_me.status_code == 200:
+                    u_name = r_me.json().get("name", "")
+                    cookie_badge = f"🟢 正常生效 (账号: {u_name or '已登录'})"
+                else:
+                    cookie_badge = f"🔴 凭据失效 (HTTP {r_me.status_code})"
+            except Exception as e:
+                cookie_badge = f"⚠️ 探测超时 ({str(e)[:30]})"
 
         status_text = (
-            "📊 **Obsidian 笔记助手系统状态**\n"
+            "📊 **Obsidian 笔记助手系统状态看板**\n"
             "━━━━━━━━━━━━━━━━━━\n"
             f"🟢 **服务状态**: 守护运行中 (端口: {self.port})\n"
-            f"🤖 **大模型引擎**: `{self.llm.model}` ({llm_enable})\n"
-            f"🍪 **知乎全文解析**: {'🟢 已就绪' if self.crawler.zhihu_cookie else '⚪ 未配置凭据 (降级模式)'}\n\n"
+            f"🤖 **大模型引擎**: `{self.llm.model}` -> {llm_badge}\n"
+            f"🍪 **知乎抓取凭据**: {cookie_badge}\n\n"
             "📚 **收件箱数据库统计**:\n"
             f"• 累计收录笔记: **{total}** 条\n"
             f"• 待同步落盘: **{unsynced}** 条\n"
             f"• 已同步至本地: **{synced}** 条\n\n"
             f"📄 **最近收录笔记**: {latest_info}\n\n"
-            "💡 发送 `/help` 查看操作指南；发送 `/llm <问题>` 即可继续追问最近一篇笔记！"
+            "💡 提示:\n"
+            "• 发送 `/llm model` 可切换/测试其他模型\n"
+            "• 发送 `/cookie <新Cookie>` 可随时热更知乎凭据"
         )
         self._reply_user(msg.from_user, status_text, is_kf, kfid)
 class RequestHandler(BaseHTTPRequestHandler):
