@@ -15,18 +15,69 @@ class LLMEnhancer:
         self.enable = enable and bool(api_key) and api_key != "YOUR_LLM_API_KEY"
         self.model = model
         self.temperature = temperature
+        self.base_url = base_url
+        self.api_key = api_key
+        self.proxy = proxy
         self.client: Optional[OpenAI] = None
+        self.direct_client: Optional[OpenAI] = None
 
         if self.enable:
-            http_client = httpx.Client(timeout=40.0, proxy=proxy) if proxy else httpx.Client(timeout=40.0)
+            http_client = httpx.Client(timeout=30.0, proxy=proxy) if proxy else httpx.Client(timeout=30.0)
             self.client = OpenAI(
                 base_url=base_url,
                 api_key=api_key,
                 http_client=http_client
             )
-            logger.info(f"[LLM] 已初始化大模型引擎 (模型: {model}, 代理: {proxy or '直连'})")
+            if proxy:
+                self.direct_client = OpenAI(
+                    base_url=base_url,
+                    api_key=api_key,
+                    http_client=httpx.Client(timeout=30.0)
+                )
+            else:
+                self.direct_client = self.client
+            logger.info(f"[LLM] 已初始化大模型引擎 (首选模型: {model}, 代理: {proxy or '直连'})")
         else:
             logger.warning("[LLM] 大模型引擎已停用或未配置 API Key")
+
+    def _call_chat_completions(self, messages: List[Dict[str, str]], response_format: Optional[Dict[str, str]] = None) -> str:
+        """调用大模型，具备自动多候选模型故障转移与代理连接故障自愈能力."""
+        candidate_models = [self.model, "gemini-3.1-pro-preview", "gemini-3.6-flash", "gemini-3.8-flash", "deepseek-chat"]
+        seen = set()
+        ordered_models = []
+        for m in candidate_models:
+            if m and m not in seen:
+                seen.add(m)
+                ordered_models.append(m)
+
+        clients = [self.client]
+        if self.direct_client and self.direct_client is not self.client:
+            clients.append(self.direct_client)
+
+        last_error = None
+        for cli in clients:
+            for m in ordered_models:
+                try:
+                    kwargs = {
+                        "model": m,
+                        "messages": messages,
+                        "temperature": self.temperature,
+                    }
+                    if response_format:
+                        kwargs["response_format"] = response_format
+                    resp = cli.chat.completions.create(**kwargs)
+                    content = resp.choices[0].message.content or ""
+                    if content.strip():
+                        if m != self.model:
+                            logger.info(f"[LLM] 模型 [{self.model}] 不可用，已自动故障转移至候选模型 [{m}]")
+                        return content
+                except Exception as e:
+                    last_error = e
+                    logger.debug(f"[LLM] 候选模型 [{m}] 调用失败: {e}")
+                    continue
+
+        raise last_error or RuntimeError("所有大模型通道均不可用")
+
     def summarize_article(self, title: str, text: str, url: str) -> Dict[str, Any]:
         """对长文章提取 100 字核心摘要与 1~3 个 Obsidian 标签."""
         if not self.enable or not text:
@@ -51,24 +102,27 @@ class LLMEnhancer:
   "key_points": ["核心要点1", "核心要点2"],
   "tags": ["#标签1", "#标签2"]
 }"""
+        clean_text = (text or "").strip()
+        if len(clean_text) < 30 or clean_text in (title, url, "-"):
+            user_prompt = f"""文章标题: {title}
+文章链接: {url}
 
-        user_prompt = f"""文章标题: {title}
+说明: 当前未能直接抓取到文章全文，请仅根据标题和链接主题，为用户提炼关于该主题的背景简介与核心价值（100字），并打上标准领域分类标签。"""
+        else:
+            user_prompt = f"""文章标题: {title}
 文章链接: {url}
 
 文章正文截取:
-{text[:4000]}"""
+{clean_text[:4000]}"""
 
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
+            raw = self._call_chat_completions(
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                temperature=self.temperature,
                 response_format={"type": "json_object"}
             )
-            raw = response.choices[0].message.content or "{}"
             data = self._parse_json(raw)
             tags = [t if t.startswith("#") else f"#{t}" for t in data.get("tags", [])]
             return {
@@ -79,7 +133,7 @@ class LLMEnhancer:
         except Exception as e:
             logger.error(f"[LLM] 文章摘要生成异常: {e}")
             return {
-                "tldr": text[:150] + "...",
+                "tldr": f"《{title}》相关文章收藏与收录",
                 "key_points": [],
                 "tags": ["#文章收藏"]
             }
@@ -97,16 +151,13 @@ class LLMEnhancer:
         user_prompt = f"随手记内容:\n{text[:500]}"
 
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
+            raw = self._call_chat_completions(
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                temperature=0.2,
                 response_format={"type": "json_object"}
             )
-            raw = response.choices[0].message.content or "{}"
             data = self._parse_json(raw)
             tags = [t if t.startswith("#") else f"#{t}" for t in data.get("tags", [])]
             return tags[:2] or ["#随想"]
@@ -173,13 +224,8 @@ class LLMEnhancer:
         messages.append({"role": "user", "content": question})
 
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=self.temperature
-            )
-            ans = response.choices[0].message.content or "未能获取回答，请重试。"
-            return ans.strip()
+            ans = self._call_chat_completions(messages=messages)
+            return ans.strip() or "未能获取回答，请重试。"
         except Exception as e:
             logger.error(f"[LLM] 对话追问异常: {e}")
             return f"⚠️ 追问回答生成失败: {e}"

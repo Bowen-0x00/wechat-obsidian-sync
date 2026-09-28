@@ -186,13 +186,18 @@ class WeChatObsidianServer:
             user_note_text = ""
             if msg.msg_type == "text" and msg.content:
                 user_note_text = re.sub(r'https?://[^\s<>"\'\(\)]+', '', msg.content).strip()
+                user_note_text = re.sub(r'^[\s\-_:：/|]+', '', user_note_text).strip()
+                user_note_text = re.sub(r'[\s\-_:：/|]+$', '', user_note_text).strip()
 
             title_hint = msg.title or (user_note_text[:40] if user_note_text else "")
             article = self.crawler.crawl(target_url, title_hint=title_hint)
-            title = article.title or msg.title or (user_note_text[:40] if user_note_text else "网页收藏")
-            if title.startswith(("http://", "https://")) and (msg.title or user_note_text):
-                title = msg.title or user_note_text[:40]
-            author = article.author
+            title = article.title or msg.title or (user_note_text[:40] if user_note_text else "")
+            if not title or title.startswith(("http://", "https://")) or title.strip(" \t\r\n-_:：/|") == "":
+                try:
+                    from .crawler import derive_title_from_url
+                except ImportError:
+                    from crawler import derive_title_from_url
+                title = derive_title_from_url(target_url)
             url = article.url or target_url
             image_urls = article.images
 
@@ -316,12 +321,17 @@ class WeChatObsidianServer:
                 if urls:
                     url = urls[0]
                     user_note_text = re.sub(r'https?://[^\s<>"\'\(\)]+', '', content_clean).strip()
+                    user_note_text = re.sub(r'^[\s\-_:：/|]+', '', user_note_text).strip()
+                    user_note_text = re.sub(r'[\s\-_:：/|]+$', '', user_note_text).strip()
                     title_hint = user_note_text[:40] if user_note_text else ""
                     article = self.crawler.crawl(url, title_hint=title_hint)
-                    title = article.title or (user_note_text[:40] if user_note_text else "网页收藏")
-                    if title.startswith(("http://", "https://")) and user_note_text:
-                        title = user_note_text[:40]
-                    author = article.author
+                    title = article.title or (user_note_text[:40] if user_note_text else "")
+                    if not title or title.startswith(("http://", "https://")) or title.strip(" \t\r\n-_:：/|") == "":
+                        try:
+                            from .crawler import derive_title_from_url
+                        except ImportError:
+                            from crawler import derive_title_from_url
+                        title = derive_title_from_url(url)
                     url = article.url or url
                     image_urls = article.images
 
@@ -559,14 +569,19 @@ class WeChatObsidianServer:
             msg_type = "link"
             url = urls[0]
             user_note_text = re.sub(r'https?://[^\s<>"\'\(\)]+', '', raw_clean).strip()
+            user_note_text = re.sub(r'^[\s\-_:：/|]+', '', user_note_text).strip()
+            user_note_text = re.sub(r'[\s\-_:：/|]+$', '', user_note_text).strip()
             title_hint = custom_title or (user_note_text[:40] if user_note_text else "")
 
             logger.info(f"[Clip API] 提取到链接，开始抓取: {url}")
             article = self.crawler.crawl(url, title_hint=title_hint)
-            title = custom_title or article.title or (user_note_text[:40] if user_note_text else "网页剪藏")
-            if title.startswith(("http://", "https://")) and (custom_title or user_note_text):
-                title = custom_title or user_note_text[:40]
-            author = article.author
+            title = custom_title or article.title or (user_note_text[:40] if user_note_text else "")
+            if not title or title.startswith(("http://", "https://")) or title.strip(" \t\r\n-_:：/|") == "":
+                try:
+                    from .crawler import derive_title_from_url
+                except ImportError:
+                    from crawler import derive_title_from_url
+                title = derive_title_from_url(url)
             url = article.url or url
             image_urls = article.images
 

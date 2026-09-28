@@ -18,6 +18,26 @@ class CrawledArticle:
     summary_hint: str = ""
     images: List[str] = field(default_factory=list) # 文章包含的图片链接
 
+def derive_title_from_url(url: str) -> str:
+    """当网页标题受阻且无用户备注时，从 URL 结构推导出语义清晰的中文标题."""
+    if "zhuanlan.zhihu.com/p/" in url:
+        m = re.search(r'zhuanlan\.zhihu\.com/p/(\d+)', url)
+        return f"知乎专栏 (ID: {m.group(1)})" if m else "知乎专栏文章"
+    if "zhihu.com/question/" in url:
+        m_ans = re.search(r'question/(\d+)/answer/(\d+)', url)
+        if m_ans:
+            return f"知乎问答 (问题: {m_ans.group(1)})"
+        m_q = re.search(r'question/(\d+)', url)
+        if m_q:
+            return f"知乎问题 (ID: {m_q.group(1)})"
+    if "mp.weixin.qq.com" in url:
+        return "微信公众号文章"
+    if "bilibili.com" in url:
+        return "哔哩哔哩内容"
+    from urllib.parse import urlparse
+    domain = urlparse(url).netloc
+    return f"网页收藏 ({domain})" if domain else "网页剪藏"
+
 
 class ArticleCrawler:
     """文章与网页正文抓取器."""
@@ -80,6 +100,9 @@ class ArticleCrawler:
         clean_url = html.unescape(clean_url)
         if not clean_url.startswith(("http://", "https://")):
             clean_url = "https://" + clean_url
+        # 清洗可能存在的无意义占位标题 (例如 - 或 纯标点)
+        if title_hint and title_hint.strip(" \t\r\n-_:：/|") == "":
+            title_hint = ""
 
         # 解析知乎重定向链接 (如 https://link.zhihu.com/?target=...)
         if "link.zhihu.com" in clean_url:
@@ -353,9 +376,13 @@ class ArticleCrawler:
             logger.debug(f"[Crawler] 知乎网页直接抓取受阻: {e}")
 
         # 6. 反爬保护兜底：严禁返回知乎 anti-spider 占位标语！
+        # 6. 反爬保护兜底：严禁返回知乎 anti-spider 占位标语与破折号！
         logger.warning(f"[Crawler] 知乎链接触发反爬拦截或 Cookie 需更新 ({url})，进入安全降级模式")
+        final_title = title_hint or derive_title_from_url(url)
+        if final_title.strip(" \t\r\n-_:：/|") == "":
+            final_title = derive_title_from_url(url)
         return CrawledArticle(
-            title=title_hint or url,
+            title=final_title,
             author="",
             content_text="",
             content_markdown="",
