@@ -18,13 +18,19 @@ llm:
   temperature: 0.2
   proxy: null                             # 访问海外大模型接口时的本地代理，国内接口填 null
 
-# 3. 云端同步 API 安全密钥 (用于本地 Obsidian 插件拉取笔记时的身份凭据)
+
+# 3. 知乎平台抓取增强配置 (可选)
+# 提示：若与 social_radar 部署在同一服务器，程序会自动复用 social_radar 的知乎 Cookie。
+# 也可直接在微信中发送 `/cookie <完整Cookie>` 随时免登录热更新！
+zhihu:
+  cookie: ""                                 # 浏览器登录 zhihu.com 后的完整 Cookie (包含 z_c0, d_c0 等)
+# 4. 云端同步 API 安全密钥 (用于本地 Obsidian 插件拉取笔记时的身份凭据)
 sync:
   api_secret: "YOUR_CUSTOM_SYNC_SECRET_TOKEN"
   server_url: "http://your-server-domain.com"
   port: 8088                              # 服务端监听端口
 
-# 4. 本地 Obsidian 归档设置
+# 5. 本地 Obsidian 归档设置
 obsidian:
   vault_path: "D:/Obsidian/workspace"     # 您的 Obsidian 知识库绝对路径
   archive_mode: "daily"                   # "daily" 按日归档，或 "inbox" 单文件归档

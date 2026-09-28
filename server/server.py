@@ -68,7 +68,30 @@ class WeChatObsidianServer:
             proxy=lc.get("proxy")
         )
 
-        self.crawler = ArticleCrawler()
+        # 加载知乎配置 (优先当前配置，若无则自动回退查找同台机器上的 social_radar 配置)
+        zc = self.cfg.get("zhihu", {})
+        zhihu_cookie = zc.get("cookie", "")
+        if not zhihu_cookie:
+            candidate_paths = [
+                os.path.join(os.path.dirname(__file__), "../../social_radar/config/config.yaml"),
+                os.path.join(os.path.dirname(__file__), "../social_radar/config/config.yaml"),
+                "/root/social_radar/config/config.yaml"
+            ]
+            for cp in candidate_paths:
+                if os.path.exists(cp):
+                    try:
+                        with open(cp, "r", encoding="utf-8") as f:
+                            sr_cfg = yaml.safe_load(f) or {}
+                            cand = sr_cfg.get("zhihu", {}).get("cookie", "")
+                            if cand:
+                                zhihu_cookie = cand
+                                logger.info(f"[Server] 成功从 social_radar 复用知乎凭据 (长度: {len(zhihu_cookie)})")
+                                break
+                    except Exception as e:
+                        logger.warning(f"[Server] 尝试复用 social_radar 配置异常: {e}")
+
+        crawler_proxy = lc.get("proxy")
+        self.crawler = ArticleCrawler(timeout=15, zhihu_cookie=zhihu_cookie, proxy=crawler_proxy)
         self.storage = InboxStorage(db_path="data/inbox.db")
         self.wecom_client = WeComClient(
             corp_id=self.corp_id,
@@ -128,6 +151,9 @@ class WeChatObsidianServer:
         elif cmd_text in ("/status", "／status", "status", "状态", "/s"):
             self._handle_status_command(msg)
             return
+        elif cmd_text.startswith(("/cookie", "／cookie", "cookie", "更新cookie", "知乎cookie")):
+            self._handle_cookie_command(msg)
+            return
         elif cmd_text.startswith(("/llm", "／llm")):
             self._handle_llm_chat_command(msg)
             return
@@ -146,15 +172,38 @@ class WeChatObsidianServer:
         if msg.msg_type == "link" or msg.url or (msg.msg_type == "text" and msg.embedded_urls):
             target_url = msg.url or (msg.embedded_urls[0] if msg.embedded_urls else "")
             logger.info(f"[Server] 抓取网页正文: {target_url}")
-            article = self.crawler.crawl(target_url, title_hint=msg.title)
-            title = article.title or msg.title or "网页收藏"
+
+            user_note_text = ""
+            if msg.msg_type == "text" and msg.content:
+                user_note_text = re.sub(r'https?://[^\s<>"\'\(\)]+', '', msg.content).strip()
+
+            title_hint = msg.title or (user_note_text[:40] if user_note_text else "")
+            article = self.crawler.crawl(target_url, title_hint=title_hint)
+            title = article.title or msg.title or (user_note_text[:40] if user_note_text else "网页收藏")
+            if title.startswith(("http://", "https://")) and (msg.title or user_note_text):
+                title = msg.title or user_note_text[:40]
             author = article.author
-            url = article.url
-            content_markdown = article.content_markdown
+            url = article.url or target_url
             image_urls = article.images
 
+            # 内容与摘要回退保障机制
+            if article.content_markdown and len(article.content_markdown.strip()) > 30:
+                content_markdown = article.content_markdown
+                content_text = article.content_text
+                if user_note_text:
+                    content_markdown = f"> [!note] 随附笔记\n> {user_note_text}\n\n" + content_markdown
+            else:
+                # 抓取正文受阻（如反爬拦截），使用卡片摘要或用户附言作为正文
+                fallback_content = msg.content if msg.msg_type == "link" else user_note_text
+                fallback_content = fallback_content.strip()
+                content_text = fallback_content or title
+                if fallback_content:
+                    content_markdown = f"> [!quote] 摘要内容\n> {fallback_content}\n\n> 🔗 原文链接: [{title}]({url})\n"
+                else:
+                    content_markdown = f"> [!info] 收藏链接\n> 🔗 [{title}]({url})\n> *(正文触发站点反爬防护，已自动记录链接与标题)*\n"
+
             # 调用大模型生成 100 字速读和标签
-            ai_res = self.llm.summarize_article(title, article.content_text, url)
+            ai_res = self.llm.summarize_article(title, content_text, url)
             tldr = ai_res.get("tldr", "")
             key_points = ai_res.get("key_points", [])
             tags = ai_res.get("tags", ["#文章收藏"])
@@ -242,6 +291,10 @@ class WeChatObsidianServer:
                     kf_cmd_msg = WeChatMessage(msg_id=msg_id, msg_type="text", from_user=from_user, create_time=send_time, content=raw_content)
                     self._handle_status_command(kf_cmd_msg, is_kf=True, kfid=kfid)
                     continue
+                elif cmd_raw.startswith(("/cookie", "／cookie", "cookie", "更新cookie", "知乎cookie")):
+                    kf_cmd_msg = WeChatMessage(msg_id=msg_id, msg_type="text", from_user=from_user, create_time=send_time, content=raw_content)
+                    self._handle_cookie_command(kf_cmd_msg, is_kf=True, kfid=kfid)
+                    continue
                 elif cmd_raw.startswith(("/llm", "／llm")):
                     kf_cmd_msg = WeChatMessage(msg_id=msg_id, msg_type="text", from_user=from_user, create_time=send_time, content=raw_content)
                     self._handle_llm_chat_command(kf_cmd_msg, is_kf=True, kfid=kfid)
@@ -252,12 +305,29 @@ class WeChatObsidianServer:
                 urls = MessageParser.URL_PATTERN.findall(content_clean)
                 if urls:
                     url = urls[0]
-                    article = self.crawler.crawl(url)
-                    title = article.title or "网页收藏"
+                    user_note_text = re.sub(r'https?://[^\s<>"\'\(\)]+', '', content_clean).strip()
+                    title_hint = user_note_text[:40] if user_note_text else ""
+                    article = self.crawler.crawl(url, title_hint=title_hint)
+                    title = article.title or (user_note_text[:40] if user_note_text else "网页收藏")
+                    if title.startswith(("http://", "https://")) and user_note_text:
+                        title = user_note_text[:40]
                     author = article.author
-                    content_markdown = article.content_markdown
+                    url = article.url or url
                     image_urls = article.images
-                    ai_res = self.llm.summarize_article(title, article.content_text, url)
+
+                    if article.content_markdown and len(article.content_markdown.strip()) > 30:
+                        content_markdown = article.content_markdown
+                        content_text = article.content_text
+                        if user_note_text:
+                            content_markdown = f"> [!note] 随附笔记\n> {user_note_text}\n\n" + content_markdown
+                    else:
+                        content_text = user_note_text or title
+                        if user_note_text:
+                            content_markdown = f"> [!quote] 随笔记录\n> {user_note_text}\n\n> 🔗 原文链接: [{title}]({url})\n"
+                        else:
+                            content_markdown = f"> [!info] 收藏链接\n> 🔗 [{title}]({url})\n> *(正文触发站点反爬防护，已自动记录链接与标题)*\n"
+
+                    ai_res = self.llm.summarize_article(title, content_text, url)
                     tldr = ai_res.get("tldr", "")
                     key_points = ai_res.get("key_points", [])
                     tags = ai_res.get("tags", ["#文章收藏"])
@@ -274,13 +344,23 @@ class WeChatObsidianServer:
                 article = self.crawler.crawl(url, title_hint=title)
                 title = article.title or title or "微信文章收藏"
                 author = article.author
-                content_markdown = article.content_markdown
+                url = article.url or url
                 image_urls = article.images
-                ai_res = self.llm.summarize_article(title, article.content_text, url)
+
+                if article.content_markdown and len(article.content_markdown.strip()) > 30:
+                    content_markdown = article.content_markdown
+                    content_text = article.content_text
+                else:
+                    content_text = raw_content or title
+                    if raw_content:
+                        content_markdown = f"> [!quote] 微信转发摘要\n> {raw_content}\n\n> 🔗 原文链接: [{title}]({url})\n"
+                    else:
+                        content_markdown = f"> [!info] 收藏链接\n> 🔗 [{title}]({url})\n> *(正文触发站点反爬防护，已自动记录链接与标题)*\n"
+
+                ai_res = self.llm.summarize_article(title, content_text, url)
                 tldr = ai_res.get("tldr", "")
                 key_points = ai_res.get("key_points", [])
                 tags = ai_res.get("tags", ["#文章收藏"])
-            # 图片类型
             elif msg_type == "image":
                 title = "图片备忘"
                 tags = ["#图片"]
@@ -386,6 +466,60 @@ class WeChatObsidianServer:
         )
         self._reply_user(msg.from_user, reply_msg.strip(), is_kf, kfid)
 
+    def _handle_cookie_command(self, msg: WeChatMessage, is_kf: bool = False, kfid: str = ""):
+        """处理 /cookie 更新知乎凭据指令."""
+        text = msg.content.strip()
+        parts = re.split(r'\s+', text, maxsplit=1)
+        if len(parts) < 2 or len(parts[1].strip()) < 15:
+            help_msg = (
+                "🍪 **知乎 Cookie 更新指南**\n"
+                "━━━━━━━━━━━━━━━━━━\n"
+                "• 用法：发送 `/cookie <您的完整Cookie>`\n"
+                "• 作用：使笔记助手具备直接解析知乎问答全文、专栏文章与高清原图的权限\n"
+                "• 获取方式：电脑浏览器访问 zhihu.com 登录后，F12 网络面板中复制任意请求的 `Cookie:` 标头内容即可。"
+            )
+            self._reply_user(msg.from_user, help_msg, is_kf, kfid)
+            return
+
+        new_cookie = parts[1].strip()
+        self.crawler.set_zhihu_cookie(new_cookie)
+
+        # 写入本地 config.yaml
+        try:
+            config_path = "config.yaml"
+            cfg_obj = {}
+            if os.path.exists(config_path):
+                with open(config_path, "r", encoding="utf-8") as f:
+                    cfg_obj = yaml.safe_load(f) or {}
+            if "zhihu" not in cfg_obj:
+                cfg_obj["zhihu"] = {}
+            cfg_obj["zhihu"]["cookie"] = new_cookie
+            with open(config_path, "w", encoding="utf-8") as f:
+                yaml.dump(cfg_obj, f, allow_unicode=True)
+            logger.info("[Server] 本地 config.yaml 知乎 Cookie 更新成功")
+        except Exception as e:
+            logger.error(f"[Server] 更新本地 config.yaml 异常: {e}")
+
+        # 同步写入 social_radar 的 config.yaml (如果存在)
+        for sr_path in ["/root/social_radar/config/config.yaml", "../social_radar/config/config.yaml"]:
+            if os.path.exists(sr_path):
+                try:
+                    with open(sr_path, "r", encoding="utf-8") as f:
+                        sr_obj = yaml.safe_load(f) or {}
+                    if "zhihu" in sr_obj:
+                        sr_obj["zhihu"]["cookie"] = new_cookie
+                        with open(sr_path, "w", encoding="utf-8") as f:
+                            yaml.dump(sr_obj, f, allow_unicode=True)
+                        logger.info(f"[Server] 同步热更新 {sr_path} 知乎 Cookie 成功！")
+                except Exception as e:
+                    logger.warning(f"[Server] 同步更新 {sr_path} 异常: {e}")
+
+        reply_msg = (
+            "✅ **知乎 Cookie 更新成功！**\n\n"
+            f"已热加载凭据（长度: {len(new_cookie)}），后续粘贴知乎链接将自动尝试拉取问答与专栏全文并排版。"
+        )
+        self._reply_user(msg.from_user, reply_msg, is_kf, kfid)
+
     def _reply_user(self, to_user: str, text: str, is_kf: bool = False, kfid: str = ""):
         """统一发送微信/客服回复."""
         if is_kf and kfid:
@@ -408,6 +542,7 @@ class WeChatObsidianServer:
             "• `/llm <时间> <问题>`: 按日期追问 (如 `/llm 20260920 ...`)\n"
             "• `/llm history`: 查看当前选中笔记的概况与已有追问历史\n\n"
             "🔹 **系统状态**:\n"
+            "• `/cookie <Cookie内容>`: 更新知乎抓取凭据，开启知乎全文与问答解析\n"
             "• `/status` 或 `状态`: 检查笔记收件箱状态、已入库数量与同步情况"
         )
         self._reply_user(msg.from_user, help_text, is_kf, kfid)
@@ -435,7 +570,8 @@ class WeChatObsidianServer:
             "📊 **Obsidian 笔记助手系统状态**\n"
             "━━━━━━━━━━━━━━━━━━\n"
             f"🟢 **服务状态**: 守护运行中 (端口: {self.port})\n"
-            f"🤖 **大模型引擎**: `{llm_model}` ({llm_enable})\n\n"
+            f"🤖 **大模型引擎**: `{llm_model}` ({llm_enable})\n"
+            f"🍪 **知乎全文解析**: {'🟢 已就绪' if self.crawler.zhihu_cookie else '⚪ 未配置凭据 (降级模式)'}\n\n"
             "📚 **收件箱数据库统计**:\n"
             f"• 累计收录笔记: **{total}** 条\n"
             f"• 待同步落盘: **{unsynced}** 条\n"
@@ -505,7 +641,15 @@ class RequestHandler(BaseHTTPRequestHandler):
                 return
 
             limit = int(params.get("limit", [50])[0])
-            notes = self.server_instance.storage.get_unsynced_notes(limit=limit)
+            since_id_raw = params.get("since_id", [None])[0]
+            since_id = int(since_id_raw) if since_id_raw and since_id_raw.isdigit() else None
+            include_synced = params.get("all", ["0"])[0] in ("1", "true", "yes")
+
+            notes = self.server_instance.storage.get_unsynced_notes(
+                limit=limit,
+                since_id=since_id,
+                include_synced=include_synced
+            )
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.end_headers()

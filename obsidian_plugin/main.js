@@ -23,8 +23,14 @@ class WeChatObsidianPlugin extends Plugin {
     // 2. 注册命令面板动作 (Ctrl/Cmd + P)
     this.addCommand({
       id: 'sync-wechat-notes',
-      name: '立即同步微信笔记到本地',
-      callback: () => this.syncNotes(true)
+      name: '立即同步未同步的微信笔记',
+      callback: () => this.syncNotes(true, false)
+    });
+
+    this.addCommand({
+      id: 'sync-all-wechat-notes',
+      name: '全量拉取微信历史笔记 (包含已同步)',
+      callback: () => this.syncNotes(true, true)
     });
 
     // 3. 注册设置页面
@@ -54,13 +60,15 @@ class WeChatObsidianPlugin extends Plugin {
     }
   }
 
-  async syncNotes(manual = false) {
+  async syncNotes(manual = false, fetchAll = false) {
     if (this.isSyncing) return;
     this.isSyncing = true;
 
     try {
-      const syncUrl = `${this.settings.serverUrl.replace(/\/+$/, '')}/api/sync?secret=${encodeURIComponent(this.settings.apiSecret)}&limit=50`;
-      
+      let syncUrl = `${this.settings.serverUrl.replace(/\/+$/, '')}/api/sync?secret=${encodeURIComponent(this.settings.apiSecret)}&limit=50`;
+      if (fetchAll) {
+        syncUrl += '&all=1';
+      }
       const resp = await requestUrl({
         url: syncUrl,
         method: 'GET'

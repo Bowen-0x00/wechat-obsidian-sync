@@ -40,16 +40,20 @@ class LocalSyncAgent:
             api_secret=self.api_secret
         )
 
-    def sync_once(self) -> int:
+    def sync_once(self, fetch_all: bool = False) -> int:
         """执行单次同步：拉取未同步笔记 -> 写入本地 Vault -> 提交确认."""
         sync_api = f"{self.server_url}/api/sync"
         ack_api = f"{self.server_url}/api/sync/ack"
 
         try:
-            # 1. 从云端拉取未同步数据
+            # 1. 从云端拉取待同步数据 (默认仅拉取未同步，带 --all 时全量重拉)
+            sync_params = {"secret": self.api_secret, "limit": 50}
+            if fetch_all:
+                sync_params["all"] = "1"
+
             resp = requests.get(
                 sync_api,
-                params={"secret": self.api_secret, "limit": 50},
+                params=sync_params,
                 timeout=15
             )
             if resp.status_code == 401:
@@ -112,6 +116,7 @@ def main():
     parser = argparse.ArgumentParser(description="WeChat to Obsidian 本地同步客户端")
     parser.add_argument("--once", action="store_true", help="单次同步后退出")
     parser.add_argument("--interval", type=int, default=60, help="轮询间隔 (秒，默认 60)")
+    parser.add_argument("--all", action="store_true", help="全量同步所有历史笔记 (包含已同步)")
     args = parser.parse_args()
 
     # 切换当前工作路径至项目根目录
@@ -120,8 +125,8 @@ def main():
     agent = LocalSyncAgent("../config.yaml")
 
     if args.once:
-        synced = agent.sync_once()
-        print(f"单次同步完成，已同步 {synced} 条笔记")
+        synced = agent.sync_once(fetch_all=args.all)
+        print(f"单次同步完成，已落盘 {synced} 条笔记")
     else:
         agent.run_loop(interval_seconds=args.interval)
 

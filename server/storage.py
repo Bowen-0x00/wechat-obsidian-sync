@@ -130,16 +130,33 @@ class InboxStorage:
             logger.info(f"[Storage] 笔记入库成功 [ID {last_id}]: {title or raw_content[:25]}")
             return last_id
 
-    def get_unsynced_notes(self, limit: int = 50) -> List[Dict[str, Any]]:
-        """获取尚未同步到本地 Obsidian 的笔记列表."""
+    def get_unsynced_notes(
+        self,
+        limit: int = 50,
+        since_id: Optional[int] = None,
+        include_synced: bool = False
+    ) -> List[Dict[str, Any]]:
+        """获取待同步到本地 Obsidian 的增量笔记列表."""
         with self._get_connection() as conn:
             cur = conn.cursor()
-            cur.execute("""
+            conditions = []
+            params = []
+            if not include_synced:
+                conditions.append("is_synced = 0")
+            if since_id is not None and since_id > 0:
+                conditions.append("id > ?")
+                params.append(since_id)
+
+            where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+            params.append(limit)
+
+            cur.execute(f"""
             SELECT id, msg_id, msg_type, from_user, create_time, raw_content, title, author, url, tldr, key_points, tags, media_filename, content_markdown, image_urls, created_at
             FROM inbox_notes
+            {where_clause}
             ORDER BY id ASC
             LIMIT ?
-            """, (limit,))
+            """, params)
             rows = cur.fetchall()
 
             notes = []
@@ -282,3 +299,15 @@ class InboxStorage:
             """, [now] + note_ids)
             conn.commit()
             logger.info(f"[Storage] 成功标记 {len(note_ids)} 篇笔记为已同步")
+
+    def reset_synced_status(self, note_ids: Optional[List[int]] = None):
+        """重置笔记同步状态为待同步 (用于按需全量重拉)."""
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            if note_ids:
+                placeholders = ",".join(["?"] * len(note_ids))
+                cur.execute(f"UPDATE inbox_notes SET is_synced = 0, synced_at = NULL WHERE id IN ({placeholders})", note_ids)
+            else:
+                cur.execute("UPDATE inbox_notes SET is_synced = 0, synced_at = NULL")
+            conn.commit()
+            logger.info("[Storage] 已重置笔记同步状态为待同步")
