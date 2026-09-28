@@ -208,3 +208,64 @@ def test_http_clip_api_endpoint():
             assert data_text["note_id"] > 0
         finally:
             httpd.shutdown()
+
+
+def test_llm_model_command_and_alert():
+    """测试 /llm model 查看状态、切换模型及告警冷却机制."""
+    from server import WeChatObsidianServer, WeChatMessage
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        orig_cwd = os.getcwd()
+        os.chdir(tmpdir)
+        try:
+            db_path = os.path.join(tmpdir, "test_cmd.db")
+            server = WeChatObsidianServer.__new__(WeChatObsidianServer)
+            server.storage = InboxStorage(db_path=db_path)
+            server.crawler = ArticleCrawler()
+            server.alert_cooldowns = {}
+
+            replies = []
+            def mock_reply(to_user, text, is_kf=False, kfid=""):
+                replies.append(text)
+            server._reply_user = mock_reply
+            server._submit_background = lambda fn, *args: fn(*args)
+
+            class MockLLM:
+                enable = True
+                model = "current-model"
+                base_url = "https://mock.api/v1"
+                def test_model(self, model_name):
+                    if model_name == "good-model":
+                        return True, "0.5s"
+                    return False, "404 Not Found"
+
+            server.llm = MockLLM()
+
+            # 1. 测试查看模型状态 (/llm model)
+            msg1 = WeChatMessage(msg_id="m1", msg_type="text", from_user="u1", create_time=1000, content="/llm model")
+            server._handle_llm_chat_command(msg1)
+            assert len(replies) == 1
+            assert "大模型引擎 (LLM) 状态看板" in replies[-1]
+
+            # 2. 测试切换模型失败分支 (/llm model bad-model)
+            msg2 = WeChatMessage(msg_id="m2", msg_type="text", from_user="u1", create_time=1001, content="/llm model bad-model")
+            server._handle_llm_chat_command(msg2)
+            assert "模型连通性测试失败" in replies[-1]
+            assert server.llm.model == "current-model"
+
+            # 3. 测试切换模型成功分支 (/llm model good-model)
+            msg3 = WeChatMessage(msg_id="m3", msg_type="text", from_user="u1", create_time=1002, content="/llm model good-model")
+            server._handle_llm_chat_command(msg3)
+            assert "大模型切换成功" in replies[-1]
+            assert server.llm.model == "good-model"
+
+            # 4. 测试告警冷却机制 (5分钟内同类告警不重复发送)
+            alert_calls = []
+            server._reply_user = lambda to_user, text, is_kf=False, kfid="": alert_calls.append(text)
+            server._notify_alert("test_alert", "告警标题1", "告警内容1", cooldown_seconds=60)
+            assert len(alert_calls) == 1
+            # 立即再次触发，应在冷却中跳过
+            server._notify_alert("test_alert", "告警标题2", "告警内容2", cooldown_seconds=60)
+            assert len(alert_calls) == 1
+        finally:
+            os.chdir(orig_cwd)

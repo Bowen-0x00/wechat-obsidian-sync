@@ -114,6 +114,40 @@ class WeChatObsidianServer:
         self.api_secret = sc.get("api_secret", "obsidian_sync_token_secure_8888")
         self.port = int(sc.get("port", 80))
 
+        # 告警通知冷却字典 (防止短时间内重复刷屏报警)
+        self.alert_cooldowns: Dict[str, float] = {}
+
+    def _notify_alert(
+        self,
+        alert_key: str,
+        title: str,
+        content: str,
+        to_user: str = "@all",
+        is_kf: bool = False,
+        kfid: str = "",
+        cooldown_seconds: int = 300
+    ):
+        """发送告警通知给用户，内置防刷屏冷却时间 (默认 5 分钟内同一类型告警仅发送一次)."""
+        if not hasattr(self, "alert_cooldowns"):
+            self.alert_cooldowns = {}
+        now = time.time()
+        last_time = self.alert_cooldowns.get(alert_key, 0)
+        if now - last_time < cooldown_seconds:
+            logger.debug(f"[Alert] 告警 [{alert_key}] 处于冷却中 (距上次 {int(now - last_time)}s)，跳过重复提醒")
+            return
+
+        self.alert_cooldowns[alert_key] = now
+        full_text = f"{title}\n━━━━━━━━━━━━━━━━━━\n{content}"
+        logger.warning(f"[Alert] 触发用户告警: {title}")
+
+        def _send():
+            try:
+                self._reply_user(to_user or "@all", full_text, is_kf, kfid)
+            except Exception as e:
+                logger.error(f"[Alert] 发送微信告警通知失败: {e}")
+
+        self._submit_background(_send)
+
         # 异步线程池处理耗时的网络爬虫与大模型请求，避免阻塞微信回调
         self.executor = ThreadPoolExecutor(max_workers=8)
     def _submit_background(self, func, *args):
@@ -222,6 +256,35 @@ class WeChatObsidianServer:
             tldr = ai_res.get("tldr", "")
             key_points = ai_res.get("key_points", [])
             tags = ai_res.get("tags", ["#文章收藏"])
+
+            # 故障与反爬告警检测
+            if getattr(article, "summary_hint", "") == "[知乎反爬限制]":
+                self._notify_alert(
+                    alert_key="zhihu_cookie_alert",
+                    title="🍪 【知乎抓取凭据告警】",
+                    content=(
+                        f"📄 剪藏目标: 《{title}》\n"
+                        f"🔗 链接: {url}\n\n"
+                        "⚠️ 状态: 触发知乎安全验证拦截 (Cookie 未配置或已失效)，无法抓取回答/专栏全文。\n"
+                        "📌 处理: 已安全归档当前摘录与原文链接。\n"
+                        "💡 恢复: 电脑登录知乎复制 Cookie，在微信发送 `/cookie <新Cookie>` 即可恢复全文抓取！"
+                    ),
+                    to_user=msg.from_user
+                )
+
+            if ai_res.get("error"):
+                self._notify_alert(
+                    alert_key="llm_api_alert",
+                    title="⚠️ 【大模型 (LLM) 异常告警】",
+                    content=(
+                        f"📄 笔记目标: 《{title}》\n"
+                        f"🤖 当前主模型: `{self.llm.model}`\n"
+                        f"❌ 错误详情: {ai_res.get('error')}\n\n"
+                        "📌 处理: 已自动降级为基础摘要保存。\n"
+                        "💡 建议: 发送 `/llm model` 检查模型连通性，或发送 `/llm model <新模型>` 切换可用模型！"
+                    ),
+                    to_user=msg.from_user
+                )
         # 2. 纯文本闪念
         elif msg.msg_type == "text":
             title = "闪念随笔"
@@ -381,6 +444,38 @@ class WeChatObsidianServer:
                 tldr = ai_res.get("tldr", "")
                 key_points = ai_res.get("key_points", [])
                 tags = ai_res.get("tags", ["#文章收藏"])
+
+                if getattr(article, "summary_hint", "") == "[知乎反爬限制]":
+                    self._notify_alert(
+                        alert_key="zhihu_cookie_alert",
+                        title="🍪 【知乎抓取凭据告警】",
+                        content=(
+                            f"📄 剪藏目标: 《{title}》\n"
+                            f"🔗 链接: {url}\n\n"
+                            "⚠️ 状态: 触发知乎安全验证拦截 (Cookie 未配置或已失效)，无法抓取回答/专栏全文。\n"
+                            "📌 处理: 已安全归档当前摘录与原文链接。\n"
+                            "💡 恢复: 电脑登录知乎复制 Cookie，在微信发送 `/cookie <新Cookie>` 即可恢复全文抓取！"
+                        ),
+                        to_user=from_user,
+                        is_kf=True,
+                        kfid=kfid
+                    )
+
+                if ai_res.get("error"):
+                    self._notify_alert(
+                        alert_key="llm_api_alert",
+                        title="⚠️ 【大模型 (LLM) 异常告警】",
+                        content=(
+                            f"📄 笔记目标: 《{title}》\n"
+                            f"🤖 当前主模型: `{self.llm.model}`\n"
+                            f"❌ 错误详情: {ai_res.get('error')}\n\n"
+                            "📌 处理: 已自动降级为基础摘要保存。\n"
+                            "💡 建议: 发送 `/llm model` 检查模型连通性，或发送 `/llm model <新模型>` 切换可用模型！"
+                        ),
+                        to_user=from_user,
+                        is_kf=True,
+                        kfid=kfid
+                    )
             elif msg_type == "image":
                 title = "图片备忘"
                 tags = ["#图片"]
@@ -438,6 +533,11 @@ class WeChatObsidianServer:
             return
 
         first_token = parts[0].strip().lower()
+        if first_token in ("model", "models", "模型"):
+            model_arg = parts[1].strip() if len(parts) > 1 else ""
+            self._handle_llm_model_command(model_arg, msg, is_kf, kfid)
+            return
+
         if first_token in ("last", "latest") or first_token.isdigit() or (len(first_token) >= 8 and first_token.isalnum()):
             target = first_token
             question = parts[1].strip() if len(parts) > 1 else ""
@@ -485,6 +585,76 @@ class WeChatObsidianServer:
             f"💡 答:\n{answer}"
         )
         self._reply_user(msg.from_user, reply_msg.strip(), is_kf, kfid)
+    def _handle_llm_model_command(self, model_arg: str, msg: WeChatMessage, is_kf: bool = False, kfid: str = ""):
+        """处理 /llm model 查看状态或切换大模型指令."""
+        # 1. 查询当前模型与状态: /llm model 或 /llm model status
+        if not model_arg or model_arg.lower() in ("status", "check", "list", "状态"):
+            ok, cost_or_err = self.llm.test_model(self.llm.model)
+            status_badge = f"🟢 连通正常 (响应耗时: {cost_or_err})" if ok else f"🔴 异常 ({cost_or_err})"
+
+            reply = (
+                "🤖 **大模型引擎 (LLM) 状态看板**\n"
+                "━━━━━━━━━━━━━━━━━━\n"
+                f"📌 当前主模型: `{self.llm.model}`\n"
+                f"⚡ 实时连通性: {status_badge}\n"
+                f"🌐 接口地址: `{self.llm.base_url}`\n\n"
+                "📋 **常用候选模型**:\n"
+                "• `gemini-3.1-pro-preview` (推荐：稳定、速度快)\n"
+                "• `gemini-3.6-flash`\n"
+                "• `gemini-3.8-flash`\n"
+                "• `deepseek-chat`\n\n"
+                "💡 **切换模型命令**:\n"
+                "发送：`/llm model <模型名称>`\n"
+                "例如：`/llm model gemini-3.1-pro-preview`"
+            )
+            self._reply_user(msg.from_user, reply, is_kf, kfid)
+            return
+
+        # 2. 切换模型: /llm model <新模型名称>
+        target_model = model_arg.strip()
+        logger.info(f"[LLM] 用户请求切换模型至: {target_model}")
+
+        # 进行微型连通性测试
+        ok, cost_or_err = self.llm.test_model(target_model)
+        if ok:
+            old_model = self.llm.model
+            self.llm.model = target_model
+
+            # 持久化到 config.yaml
+            try:
+                config_path = "config.yaml"
+                if os.path.exists(config_path):
+                    with open(config_path, "r", encoding="utf-8") as f:
+                        cfg_obj = yaml.safe_load(f) or {}
+                    if "llm" not in cfg_obj:
+                        cfg_obj["llm"] = {}
+                    cfg_obj["llm"]["model"] = target_model
+                    with open(config_path, "w", encoding="utf-8") as f:
+                        yaml.dump(cfg_obj, f, allow_unicode=True)
+                    logger.info(f"[LLM] 成功持久化保存新模型配置: {target_model}")
+            except Exception as e:
+                logger.error(f"[LLM] 写入 config.yaml 异常: {e}")
+
+            reply = (
+                "✅ **大模型切换成功！**\n"
+                "━━━━━━━━━━━━━━━━━━\n"
+                f"🔄 原模型: `{old_model}`\n"
+                f"🤖 新模型: `{target_model}`\n"
+                f"⚡ 连通性测试: 🟢 通过 (耗时: {cost_or_err})\n"
+                "💾 配置文件已持久化保存，后续所有剪藏与追问将自动调用新模型！"
+            )
+            self._reply_user(msg.from_user, reply, is_kf, kfid)
+        else:
+            reply = (
+                "⚠️ **模型连通性测试失败！**\n"
+                "━━━━━━━━━━━━━━━━━━\n"
+                f"目标模型: `{target_model}`\n"
+                f"❌ 失败原因: {cost_or_err}\n\n"
+                f"🛡️ 为保障服务可用，系统仍保持当前可用模型: `{self.llm.model}`\n"
+                "💡 建议：发送 `/llm model` 查看可用候选模型列表。"
+            )
+            self._reply_user(msg.from_user, reply, is_kf, kfid)
+
 
     def _handle_cookie_command(self, msg: WeChatMessage, is_kf: bool = False, kfid: str = ""):
         """处理 /cookie 更新知乎凭据指令."""
@@ -603,6 +773,34 @@ class WeChatObsidianServer:
             for t in ai_res.get("tags", ["#剪藏"]):
                 if t not in tags:
                     tags.append(t)
+
+            if getattr(article, "summary_hint", "") == "[知乎反爬限制]":
+                self._notify_alert(
+                    alert_key="zhihu_cookie_alert",
+                    title="🍪 【知乎抓取凭据告警】",
+                    content=(
+                        f"📄 剪藏目标: 《{title}》\n"
+                        f"🔗 链接: {url}\n\n"
+                        "⚠️ 状态: 触发知乎安全验证拦截 (Cookie 未配置或已失效)，无法抓取回答/专栏全文。\n"
+                        "📌 处理: 已安全归档当前摘录与原文链接。\n"
+                        "💡 恢复: 电脑登录知乎复制 Cookie，在微信发送 `/cookie <新Cookie>` 即可恢复全文抓取！"
+                    ),
+                    to_user=from_user
+                )
+
+            if ai_res.get("error"):
+                self._notify_alert(
+                    alert_key="llm_api_alert",
+                    title="⚠️ 【大模型 (LLM) 异常告警】",
+                    content=(
+                        f"📄 笔记目标: 《{title}》\n"
+                        f"🤖 当前主模型: `{self.llm.model}`\n"
+                        f"❌ 错误详情: {ai_res.get('error')}\n\n"
+                        "📌 处理: 已自动降级为基础摘要保存。\n"
+                        "💡 建议: 发送 `/llm model` 检查模型连通性，或发送 `/llm model <新模型>` 切换可用模型！"
+                    ),
+                    to_user=from_user
+                )
         else:
             msg_type = "text"
             title = custom_title or "闪念随笔"
@@ -674,7 +872,9 @@ class WeChatObsidianServer:
             "• `/llm last <问题>`: 追问最近一篇笔记\n"
             "• `/llm <ID> <问题>`: 追问指定 ID 笔记 (如 `/llm 17 ...`)\n"
             "• `/llm <时间> <问题>`: 按日期追问 (如 `/llm 20260920 ...`)\n"
-            "• `/llm history`: 查看当前选中笔记的概况与已有追问历史\n\n"
+            "• `/llm history`: 查看当前选中笔记的概况与已有追问历史\n"
+            "• `/llm model`: 查看大模型连接状态与推荐模型列表\n"
+            "• `/llm model <模型名称>`: 切换当前大模型 (如 `/llm model gemini-3.1-pro-preview`)\n\n"
             "🔹 **系统状态**:\n"
             "• `/cookie <Cookie内容>`: 更新知乎抓取凭据，开启知乎全文与问答解析\n"
             "• `/status` 或 `状态`: 检查笔记收件箱状态、已入库数量与同步情况"
@@ -704,7 +904,7 @@ class WeChatObsidianServer:
             "📊 **Obsidian 笔记助手系统状态**\n"
             "━━━━━━━━━━━━━━━━━━\n"
             f"🟢 **服务状态**: 守护运行中 (端口: {self.port})\n"
-            f"🤖 **大模型引擎**: `{llm_model}` ({llm_enable})\n"
+            f"🤖 **大模型引擎**: `{self.llm.model}` ({llm_enable})\n"
             f"🍪 **知乎全文解析**: {'🟢 已就绪' if self.crawler.zhihu_cookie else '⚪ 未配置凭据 (降级模式)'}\n\n"
             "📚 **收件箱数据库统计**:\n"
             f"• 累计收录笔记: **{total}** 条\n"

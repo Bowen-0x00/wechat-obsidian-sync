@@ -77,6 +77,35 @@ class LLMEnhancer:
                     continue
 
         raise last_error or RuntimeError("所有大模型通道均不可用")
+    def test_model(self, model_name: str) -> tuple[bool, str]:
+        """测试指定模型的真实连通性与响应速度."""
+        if not self.enable:
+            return False, "LLM 未启用或未配置 API Key"
+
+        import time
+        start_time = time.time()
+        clients = [self.client]
+        if self.direct_client and self.direct_client is not self.client:
+            clients.append(self.direct_client)
+
+        last_err = ""
+        for cli in clients:
+            try:
+                resp = cli.chat.completions.create(
+                    model=model_name,
+                    messages=[{"role": "user", "content": "hi"}],
+                    max_tokens=5,
+                    timeout=8.0
+                )
+                cost = time.time() - start_time
+                if resp.choices and resp.choices[0].message:
+                    return True, f"{cost:.2f}s"
+            except Exception as e:
+                last_err = str(e)
+                continue
+
+        return False, last_err[:120]
+
 
     def summarize_article(self, title: str, text: str, url: str) -> Dict[str, Any]:
         """对长文章提取 100 字核心摘要与 1~3 个 Obsidian 标签."""
@@ -85,7 +114,8 @@ class LLMEnhancer:
             return {
                 "tldr": text[:150].strip() + ("..." if len(text) > 150 else ""),
                 "key_points": [],
-                "tags": ["#网页收藏"]
+                "tags": ["#网页收藏"],
+                "error": None
             }
 
         system_prompt = """你是一位高水平的个人知识管理专家（PKM）与科研阅读助手。
@@ -128,14 +158,16 @@ class LLMEnhancer:
             return {
                 "tldr": data.get("tldr", ""),
                 "key_points": data.get("key_points", []),
-                "tags": tags or ["#文章收藏"]
+                "tags": tags or ["#文章收藏"],
+                "error": None
             }
         except Exception as e:
             logger.error(f"[LLM] 文章摘要生成异常: {e}")
             return {
                 "tldr": f"《{title}》相关文章收藏与收录",
                 "key_points": [],
-                "tags": ["#文章收藏"]
+                "tags": ["#文章收藏"],
+                "error": str(e)
             }
 
     def tag_thought(self, text: str) -> List[str]:
