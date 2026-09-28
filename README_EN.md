@@ -28,9 +28,23 @@ Say goodbye to costly commercial subscription fees and privacy exposure risks! Y
 - 🔌 **Dual Sync Clients**:
   - **Native Obsidian Plugin**: Installs directly in Obsidian with a left-ribbon sync button, command palette shortcuts, automated background polling timer, and settings tab.
   - **Standalone Python Daemon**: Syncs notes silently in the background on your PC without requiring the Obsidian client to be open.
+- 🚀 **System-Wide Native Share Sheet Support (Direct to Cloud, No WeChat Middleman)**:
+  - Provides an open `POST /api/clip` endpoint.
+  - Share directly from Zhihu, Bilibili, Chrome, or any mobile browser via system share sheet (HTTP Shortcuts / iOS Shortcuts) $\rightarrow$ "Clip to Obsidian" without WeChat's SDK restrictions.
+  - Automatically scrapes full Zhihu Q&A / articles; live `/cookie <Cookie>` hot-update supported.
+
+### 💬 Interactive Commands (Send directly in WeChat)
+
+| Command | Alias | Description | Example |
+| :--- | :--- | :--- | :--- |
+| **`/status`** | `状态` | **Real-time live probe** of LLM connectivity & Zhihu Cookie health | `/status` |
+| **`/llm model`** | `模型` | View active LLM model and recommended candidates | `/llm model` |
+| **`/llm model <Name>`**| - | **Hot-switch active model** with pre-flight connection test | `/llm model gemini-3.1-pro-preview` |
+| **`/llm <question>`** | - | Multi-turn conversational follow-up on the latest note | `/llm What is the key innovation?` |
+| **`/cookie <Cookie>`** | - | **Hot-update Zhihu cookie** directly from WeChat chat | `/cookie _xsrf=...` |
+| **`/help`** | `帮助` | Display interactive command manual | `/help` |
 
 ---
-
 ## 🏗️ Architecture
 
 ```
