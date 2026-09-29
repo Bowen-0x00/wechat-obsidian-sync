@@ -1,0 +1,969 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WeHub · 个人全域智能工作台</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Lucide Icons CDN -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <!-- Marked.js for Markdown -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <!-- DOMPurify for security -->
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.6/dist/purify.min.js"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50: '#ecfeff',
+              100: '#cffafe',
+              500: '#06b6d4',
+              600: '#0891b2',
+              700: '#0e7490'
+            },
+            surface: {
+              800: '#1e293b',
+              900: '#0f172a',
+              950: '#020617'
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    /* 优雅滚动条 */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.25); border-radius: 9999px; }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(148, 163, 184, 0.45); }
+    
+    /* Markdown 渲染美化 */
+    .prose-dark h1, .prose-dark h2, .prose-dark h3 { color: #f1f5f9; font-weight: 700; margin-top: 1.25rem; margin-bottom: 0.5rem; }
+    .prose-dark h3 { font-size: 1.1rem; border-left: 3px solid #06b6d4; padding-left: 0.5rem; }
+    .prose-dark p { color: #cbd5e1; line-height: 1.7; margin-bottom: 0.85rem; }
+    .prose-dark ul { list-style-type: disc; padding-left: 1.25rem; margin-bottom: 0.85rem; color: #cbd5e1; }
+    .prose-dark li { margin-bottom: 0.35rem; }
+    .prose-dark blockquote { border-left: 3px solid #475569; padding-left: 0.85rem; color: #94a3b8; font-style: italic; margin-bottom: 0.85rem; }
+    .prose-dark code { background: #1e293b; padding: 0.15rem 0.35rem; border-radius: 0.25rem; font-size: 0.875em; color: #38bdf8; }
+    .prose-dark pre { background: #090d16; padding: 1rem; border-radius: 0.5rem; overflow-x: auto; margin-bottom: 1rem; border: 1px solid #1e293b; }
+    .prose-dark strong { color: #f8fafc; font-weight: 600; }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans antialiased selection:bg-cyan-500/30 selection:text-cyan-200">
+
+  <!-- ===================================================================== -->
+  <!-- 1. 顶部持久导航栏 (Header) -->
+  <!-- ===================================================================== -->
+  <header class="sticky top-0 z-40 backdrop-blur-md bg-slate-950/80 border-b border-slate-800/80 transition-colors">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-4">
+      
+      <!-- Brand & Status -->
+      <div class="flex items-center gap-3 shrink-0">
+        <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-cyan-500 to-indigo-500 flex items-center justify-center shadow-lg shadow-cyan-500/20 ring-1 ring-white/20">
+          <i data-lucide="sparkles" class="w-5 h-5 text-white"></i>
+        </div>
+        <div>
+          <div class="flex items-center gap-2">
+            <span class="font-bold text-lg tracking-tight bg-gradient-to-r from-slate-100 via-slate-200 to-cyan-400 bg-clip-text text-transparent">WeHub</span>
+            <span class="text-xs font-medium px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">智能工作台</span>
+          </div>
+          <div class="flex items-center gap-1.5 text-[11px] text-slate-400">
+            <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+            <span>4 大应用全域协同在线</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Center: Global Search -->
+      <div class="flex-1 max-w-xl hidden md:block">
+        <div class="relative">
+          <i data-lucide="search" class="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2"></i>
+          <input 
+            type="text" 
+            id="searchInput"
+            placeholder="全域搜索笔记、学术论文、洞察命题或社交热点... (快捷键 /)"
+            class="w-full bg-slate-900/90 border border-slate-800 rounded-xl pl-10 pr-10 py-2 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500/50 transition-all shadow-inner"
+          />
+          <kbd class="hidden sm:inline-block absolute right-3 top-1/2 -translate-y-1/2 px-1.5 py-0.5 text-[10px] font-mono text-slate-500 bg-slate-800 border border-slate-700 rounded">Ctrl+K</kbd>
+        </div>
+      </div>
+
+      <!-- Right Actions -->
+      <div class="flex items-center gap-2">
+        <button id="refreshBtn" title="刷新数据" class="p-2 rounded-xl bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-300 hover:text-cyan-400 transition-colors">
+          <i data-lucide="rotate-cw" class="w-4 h-4"></i>
+        </button>
+        <button id="themeToggleBtn" title="切换明暗主题" class="p-2 rounded-xl bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-300 hover:text-amber-400 transition-colors">
+          <i data-lucide="moon" class="w-4 h-4"></i>
+        </button>
+        <button id="lockBtn" title="锁定/退出鉴权" class="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-800 hover:border-red-500/40 text-xs text-slate-300 hover:text-red-400 transition-colors">
+          <i data-lucide="lock" class="w-3.5 h-3.5"></i>
+          <span class="hidden sm:inline">安全锁</span>
+        </button>
+      </div>
+
+    </div>
+  </header>
+
+  <!-- ===================================================================== -->
+  <!-- 2. 主页面内容区域 (Main Container) -->
+  <!-- ===================================================================== -->
+  <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+
+    <!-- 2.1 统计数据总览卡片 (Stats Cards) -->
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-4" id="statsGrid">
+      
+      <!-- 洞察引擎 -->
+      <div class="p-4 rounded-2xl bg-gradient-to-b from-slate-900 to-slate-900/60 border border-slate-800/80 relative overflow-hidden group hover:border-cyan-500/30 transition-all">
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-xs font-medium text-cyan-400 flex items-center gap-1.5">
+            <i data-lucide="lightbulb" class="w-3.5 h-3.5"></i> 前沿学术洞察
+          </span>
+          <span class="text-[10px] px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-300 font-mono">≥85分: <strong id="statInsightHigh" class="font-bold">0</strong></span>
+        </div>
+        <div class="text-2xl sm:text-3xl font-extrabold text-slate-100 tracking-tight" id="statInsightTotal">0</div>
+        <div class="text-xs text-slate-500 mt-1 flex items-center gap-1">
+          <span>今日新增 <strong id="statInsightToday" class="text-slate-300">0</strong> 条顶级突破</span>
+        </div>
+        <div class="absolute right-2 -bottom-2 opacity-5 text-cyan-400 group-hover:opacity-10 transition-opacity">
+          <i data-lucide="zap" class="w-20 h-20"></i>
+        </div>
+      </div>
+
+      <!-- 微信随手笔记 -->
+      <div class="p-4 rounded-2xl bg-gradient-to-b from-slate-900 to-slate-900/60 border border-slate-800/80 relative overflow-hidden group hover:border-emerald-500/30 transition-all">
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-xs font-medium text-emerald-400 flex items-center gap-1.5">
+            <i data-lucide="book-open" class="w-3.5 h-3.5"></i> 微信笔记助手
+          </span>
+          <span class="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-300 font-mono">待同步: <strong id="statNotesUnsynced" class="font-bold">0</strong></span>
+        </div>
+        <div class="text-2xl sm:text-3xl font-extrabold text-slate-100 tracking-tight" id="statNotesTotal">0</div>
+        <div class="text-xs text-slate-500 mt-1">
+          <span>今日沉淀 <strong id="statNotesToday" class="text-slate-300">0</strong> 篇长文与闪念</span>
+        </div>
+        <div class="absolute right-2 -bottom-2 opacity-5 text-emerald-400 group-hover:opacity-10 transition-opacity">
+          <i data-lucide="message-square" class="w-20 h-20"></i>
+        </div>
+      </div>
+
+      <!-- 社交雷达 -->
+      <div class="p-4 rounded-2xl bg-gradient-to-b from-slate-900 to-slate-900/60 border border-slate-800/80 relative overflow-hidden group hover:border-indigo-500/30 transition-all">
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-xs font-medium text-indigo-400 flex items-center gap-1.5">
+            <i data-lucide="radar" class="w-3.5 h-3.5"></i> 社交前沿雷达
+          </span>
+          <span class="text-[10px] px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-300 font-mono">高价值: <strong id="statRadarHigh" class="font-bold">0</strong></span>
+        </div>
+        <div class="text-2xl sm:text-3xl font-extrabold text-slate-100 tracking-tight" id="statRadarTotal">0</div>
+        <div class="text-xs text-slate-500 mt-1">
+          <span>知乎 <strong id="statRadarZhihu" class="text-slate-300">0</strong> 条 · X/推特 <strong id="statRadarTwitter" class="text-slate-300">0</strong> 条</span>
+        </div>
+        <div class="absolute right-2 -bottom-2 opacity-5 text-indigo-400 group-hover:opacity-10 transition-opacity">
+          <i data-lucide="radio" class="w-20 h-20"></i>
+        </div>
+      </div>
+
+      <!-- 邮件学术 -->
+      <div class="p-4 rounded-2xl bg-gradient-to-b from-slate-900 to-slate-900/60 border border-slate-800/80 relative overflow-hidden group hover:border-amber-500/30 transition-all">
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-xs font-medium text-amber-400 flex items-center gap-1.5">
+            <i data-lucide="mail" class="w-3.5 h-3.5"></i> 邮件与论文追踪
+          </span>
+          <span class="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-300 font-mono">待办: <strong id="statMailTasks" class="font-bold">0</strong></span>
+        </div>
+        <div class="text-2xl sm:text-3xl font-extrabold text-slate-100 tracking-tight flex items-baseline gap-2">
+          <span id="statMailTotal">0</span>
+          <span class="text-sm font-normal text-slate-400">/ <span id="statPapersTotal">0</span> 论文</span>
+        </div>
+        <div class="text-xs text-slate-500 mt-1">
+          <span>arXiv 顶会与紧急邮件协同</span>
+        </div>
+        <div class="absolute right-2 -bottom-2 opacity-5 text-amber-400 group-hover:opacity-10 transition-opacity">
+          <i data-lucide="inbox" class="w-20 h-20"></i>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- 2.2 筛选导航与分类选择 (Tabs & Filters) -->
+    <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-slate-900/60 p-2.5 rounded-2xl border border-slate-800">
+      
+      <!-- App Switcher Tabs -->
+      <div class="flex items-center gap-1 overflow-x-auto pb-1 md:pb-0 scrollbar-none" id="appTabs">
+        <button data-app="all" class="app-tab px-3.5 py-1.5 rounded-xl text-xs font-semibold bg-cyan-500 text-slate-950 shadow-sm transition-all whitespace-nowrap">全部动态</button>
+        <button data-app="insights" class="app-tab px-3.5 py-1.5 rounded-xl text-xs font-medium text-slate-300 hover:text-white hover:bg-slate-800 transition-all whitespace-nowrap flex items-center gap-1.5">
+          <span class="w-2 h-2 rounded-full bg-cyan-400"></span> 洞察引擎
+        </button>
+        <button data-app="notes" class="app-tab px-3.5 py-1.5 rounded-xl text-xs font-medium text-slate-300 hover:text-white hover:bg-slate-800 transition-all whitespace-nowrap flex items-center gap-1.5">
+          <span class="w-2 h-2 rounded-full bg-emerald-400"></span> 微信笔记
+        </button>
+        <button data-app="radar" class="app-tab px-3.5 py-1.5 rounded-xl text-xs font-medium text-slate-300 hover:text-white hover:bg-slate-800 transition-all whitespace-nowrap flex items-center gap-1.5">
+          <span class="w-2 h-2 rounded-full bg-indigo-400"></span> 社交雷达
+        </button>
+        <button data-app="mail" class="app-tab px-3.5 py-1.5 rounded-xl text-xs font-medium text-slate-300 hover:text-white hover:bg-slate-800 transition-all whitespace-nowrap flex items-center gap-1.5">
+          <span class="w-2 h-2 rounded-full bg-amber-400"></span> 邮件任务
+        </button>
+        <button data-app="papers" class="app-tab px-3.5 py-1.5 rounded-xl text-xs font-medium text-slate-300 hover:text-white hover:bg-slate-800 transition-all whitespace-nowrap flex items-center gap-1.5">
+          <span class="w-2 h-2 rounded-full bg-rose-400"></span> 学术论文
+        </button>
+      </div>
+
+      <!-- Secondary Filters -->
+      <div class="flex items-center gap-2 text-xs">
+        
+        <!-- Score Filter -->
+        <select id="scoreFilter" class="bg-slate-900 border border-slate-700/80 rounded-xl px-2.5 py-1.5 text-slate-300 focus:outline-none focus:ring-1 focus:ring-cyan-500">
+          <option value="0">全部评分</option>
+          <option value="90">🔥 90分+ (学术神作)</option>
+          <option value="80">✨ 80分+ (深度高分)</option>
+          <option value="70">🌟 70分+ (高价值)</option>
+        </select>
+
+        <!-- Time Filter -->
+        <select id="timeFilter" class="bg-slate-900 border border-slate-700/80 rounded-xl px-2.5 py-1.5 text-slate-300 focus:outline-none focus:ring-1 focus:ring-cyan-500">
+          <option value="0">全部时间</option>
+          <option value="1">今日内</option>
+          <option value="3">3 天内</option>
+          <option value="7">7 天内</option>
+        </select>
+
+        <!-- View Mode (Cards / List) -->
+        <div class="flex items-center bg-slate-900 border border-slate-700/80 rounded-xl p-0.5">
+          <button id="viewGridBtn" class="p-1 rounded-lg bg-slate-800 text-cyan-400" title="网格卡片视图">
+            <i data-lucide="layout-grid" class="w-3.5 h-3.5"></i>
+          </button>
+          <button id="viewListBtn" class="p-1 rounded-lg text-slate-400 hover:text-white" title="紧凑列表视图">
+            <i data-lucide="list" class="w-3.5 h-3.5"></i>
+          </button>
+        </div>
+
+      </div>
+
+    </div>
+
+    <!-- 2.3 条目列表展示 (Items Feed Container) -->
+    <div id="itemsContainer" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+      <!-- 动态卡片内容注入 -->
+    </div>
+
+    <!-- 空白或加载中提示 -->
+    <div id="loadingIndicator" class="py-12 flex flex-col items-center justify-center text-slate-500 space-y-3">
+      <i data-lucide="loader" class="w-7 h-7 text-cyan-400 animate-spin"></i>
+      <span class="text-sm font-medium">正在实时拉取全域协同数据...</span>
+    </div>
+    
+    <div id="emptyIndicator" class="hidden py-16 text-center text-slate-500">
+      <i data-lucide="inbox" class="w-12 h-12 mx-auto mb-3 text-slate-600"></i>
+      <p class="text-sm">暂无符合当前筛选条件的动态记录</p>
+    </div>
+
+    <!-- 分页加载更多 -->
+    <div class="pt-4 pb-8 flex justify-center">
+      <button id="loadMoreBtn" class="hidden px-6 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-850 border border-slate-800 hover:border-slate-700 text-xs font-medium text-slate-300 hover:text-cyan-400 transition-all shadow-sm">
+        加载更多历史记录
+      </button>
+    </div>
+
+  </main>
+
+  <!-- ===================================================================== -->
+  <!-- 3. 详情与交互追问抽屉 (Detail & LLM Chat Drawer) -->
+  <!-- ===================================================================== -->
+  <div id="drawerOverlay" class="fixed inset-0 bg-slate-950/70 backdrop-blur-sm z-50 hidden transition-opacity">
+    <div id="drawerPanel" class="fixed inset-y-0 right-0 max-w-2xl w-full bg-slate-900 border-l border-slate-800 shadow-2xl flex flex-col transform translate-x-full transition-transform duration-300 ease-in-out">
+      
+      <!-- Drawer Header -->
+      <div class="px-6 py-4 border-b border-slate-800 flex items-center justify-between bg-slate-900/90 backdrop-blur shrink-0">
+        <div class="flex items-center gap-2">
+          <span id="drawerBadge" class="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">应用标签</span>
+          <span id="drawerScore" class="text-xs font-bold text-amber-400 flex items-center gap-1 font-mono"></span>
+        </div>
+        <div class="flex items-center gap-2">
+          <a id="drawerExternalLink" href="#" target="_blank" class="p-1.5 rounded-lg bg-slate-800 text-slate-400 hover:text-cyan-400 transition-colors hidden" title="在原网页打开">
+            <i data-lucide="external-link" class="w-4 h-4"></i>
+          </a>
+          <button id="closeDrawerBtn" class="p-1.5 rounded-lg bg-slate-800 text-slate-400 hover:text-white transition-colors" title="关闭 (Esc)">
+            <i data-lucide="x" class="w-4 h-4"></i>
+          </button>
+        </div>
+      </div>
+
+      <!-- Drawer Content Scrollable Area -->
+      <div class="flex-1 overflow-y-auto p-6 space-y-6">
+        
+        <!-- Title & Metadata -->
+        <div>
+          <h2 id="drawerTitle" class="text-xl font-bold text-slate-100 leading-snug"></h2>
+          <div class="flex flex-wrap items-center gap-y-1 gap-x-3 text-xs text-slate-400 mt-2">
+            <span id="drawerAuthor" class="flex items-center gap-1"></span>
+            <span>•</span>
+            <span id="drawerTime"></span>
+          </div>
+          <div id="drawerTags" class="flex flex-wrap gap-1.5 mt-3"></div>
+        </div>
+
+        <!-- Rendered Full Content -->
+        <div class="p-4 rounded-xl bg-slate-950/70 border border-slate-800/80 shadow-inner">
+          <div id="drawerMarkdown" class="prose-dark text-sm"></div>
+        </div>
+
+        <!-- =================================================================== -->
+        <!-- LLM 交互追问区域 (Live Chat Stream) -->
+        <!-- =================================================================== -->
+        <div class="border-t border-slate-800 pt-6 space-y-4">
+          
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-2">
+              <div class="w-6 h-6 rounded-lg bg-gradient-to-tr from-cyan-500 to-indigo-500 flex items-center justify-center text-white text-xs">
+                <i data-lucide="bot" class="w-3.5 h-3.5"></i>
+              </div>
+              <h3 class="font-bold text-sm text-slate-200">AI 深度追问与多轮对话</h3>
+            </div>
+            <span class="text-[11px] text-slate-400 font-mono" id="drawerChatCount">0 轮交互</span>
+          </div>
+
+          <!-- Quick Prompt Chips -->
+          <div class="flex flex-wrap gap-1.5" id="quickPrompts">
+            <button class="quick-chip text-[11px] px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-750 border border-slate-700/70 text-slate-300 hover:text-cyan-400 transition-colors">
+              💡 一句话提炼本质与核心逻辑
+            </button>
+            <button class="quick-chip text-[11px] px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-750 border border-slate-700/70 text-slate-300 hover:text-cyan-400 transition-colors">
+              🏗️ 剖析底层架构与工程难点
+            </button>
+            <button class="quick-chip text-[11px] px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-750 border border-slate-700/70 text-slate-300 hover:text-cyan-400 transition-colors">
+              ⚠️ 审视可能的技术盲区与风险
+            </button>
+          </div>
+
+          <!-- Chat History Stream -->
+          <div id="chatHistoryStream" class="space-y-3 pt-2">
+            <!-- 聊天泡泡动态注入 -->
+          </div>
+
+          <!-- Chat Loading Animation -->
+          <div id="chatLoadingIndicator" class="hidden flex items-center gap-2 text-xs text-cyan-400 py-2">
+            <i data-lucide="loader" class="w-4 h-4 animate-spin"></i>
+            <span>AI 大模型正在深度研读并组织推演推导...</span>
+          </div>
+
+        </div>
+
+      </div>
+
+      <!-- Drawer Chat Input Footer -->
+      <div class="p-4 border-t border-slate-800 bg-slate-900/95 shrink-0">
+        <div class="flex gap-2">
+          <textarea 
+            id="chatInput" 
+            rows="2"
+            placeholder="针对该条笔记/论文发起深度追问... (Ctrl+Enter 发送)"
+            class="flex-1 bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-cyan-500 focus:border-cyan-500 resize-none"
+          ></textarea>
+          <button id="sendChatBtn" class="px-4 bg-gradient-to-r from-cyan-500 to-indigo-600 hover:from-cyan-400 hover:to-indigo-500 text-slate-950 font-bold rounded-xl text-xs flex items-center justify-center gap-1 transition-all shadow-md">
+            <i data-lucide="send" class="w-3.5 h-3.5"></i>
+            <span>追问</span>
+          </button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- 4. 单次免密安全鉴权门禁 (Auth Lock Modal) -->
+  <!-- ===================================================================== -->
+  <div id="authModal" class="fixed inset-0 bg-slate-950/90 backdrop-blur-md z-50 flex items-center justify-center p-4 hidden">
+    <div class="max-w-md w-full bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 shadow-2xl relative overflow-hidden">
+      
+      <div class="w-12 h-12 rounded-2xl bg-gradient-to-tr from-cyan-500 to-indigo-500 flex items-center justify-center mx-auto mb-4 shadow-lg shadow-cyan-500/20">
+        <i data-lucide="shield-check" class="w-6 h-6 text-white"></i>
+      </div>
+
+      <div class="text-center mb-6">
+        <h3 class="text-xl font-bold text-slate-100">WeHub 个人工作台</h3>
+        <p class="text-xs text-slate-400 mt-1">此系统受访问秘钥防护，防外部爬虫与恶意扫描。<br/>鉴权一次即可在当前设备保持 90 天免密访问。</p>
+      </div>
+
+      <form id="authForm" class="space-y-4">
+        <div>
+          <label class="block text-xs font-medium text-slate-300 mb-1.5">系统访问秘钥 (Access Secret)</label>
+          <div class="relative">
+            <input 
+              type="password" 
+              id="secretInput" 
+              placeholder="请输入您的 api_secret..." 
+              required
+              class="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
+            />
+            <button type="button" id="toggleSecretEye" class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300">
+              <i data-lucide="eye" class="w-4 h-4"></i>
+            </button>
+          </div>
+        </div>
+
+        <div class="flex items-center justify-between text-xs text-slate-400">
+          <label class="flex items-center gap-2 cursor-pointer">
+            <input type="checkbox" id="rememberMeCheckbox" checked class="rounded border-slate-700 bg-slate-800 text-cyan-500 focus:ring-cyan-500">
+            <span>记住此设备 (长期免登录)</span>
+          </label>
+        </div>
+
+        <div id="authErrorMsg" class="hidden text-xs text-red-400 text-center py-1"></div>
+
+        <button 
+          type="submit" 
+          id="authSubmitBtn"
+          class="w-full py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-indigo-600 hover:from-cyan-400 hover:to-indigo-500 text-slate-950 font-bold text-sm shadow-lg shadow-cyan-500/20 transition-all flex items-center justify-center gap-2"
+        >
+          <span>验证并解锁工作台</span>
+          <i data-lucide="arrow-right" class="w-4 h-4"></i>
+        </button>
+      </form>
+
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- 5. 核心前端交互引擎 JS -->
+  <!-- ===================================================================== -->
+  <script>
+    // 全局状态管理
+    const state = {
+      token: localStorage.getItem('wehub_auth_token') || '',
+      currentApp: 'all',
+      searchKeyword: '',
+      minScore: 0,
+      days: 0,
+      viewMode: 'grid', // 'grid' or 'list'
+      offset: 0,
+      limit: 30,
+      hasMore: false,
+      currentItem: null
+    };
+
+    // 辅助 API 封装 (带 Bearer 自动鉴权)
+    async function apiFetch(endpoint, options = {}) {
+      const headers = options.headers || {};
+      if (state.token) {
+        headers['Authorization'] = `Bearer ${state.token}`;
+      }
+      options.headers = headers;
+
+      const resp = await fetch(endpoint, options);
+      if (resp.status === 401) {
+        // 鉴权失败，展示登录弹窗
+        showAuthModal('访问凭据已过期或无效，请重新输入');
+        throw new Error('Unauthorized');
+      }
+      return resp.json();
+    }
+
+    // 格式化相对时间
+    function formatTimeAgo(timeStr) {
+      if (!timeStr) return '';
+      const d = new Date(timeStr.replace(/-/g, '/'));
+      const diffSec = Math.floor((Date.now() - d.getTime()) / 1000);
+      if (diffSec < 60) return '刚刚';
+      if (diffSec < 3600) return `${Math.floor(diffSec / 60)} 分钟前`;
+      if (diffSec < 86400) return `${Math.floor(diffSec / 3600)} 小时前`;
+      if (diffSec < 86400 * 3) return `${Math.floor(diffSec / 86400)} 天前`;
+      return timeStr.substring(0, 16);
+    }
+
+    // 1. 初始化鉴权检查
+    function checkAuth() {
+      if (!state.token) {
+        showAuthModal();
+      } else {
+        hideAuthModal();
+        loadAllData();
+      }
+    }
+
+    function showAuthModal(errMsg = '') {
+      document.getElementById('authModal').classList.remove('hidden');
+      const errEl = document.getElementById('authErrorMsg');
+      if (errMsg) {
+        errEl.textContent = errMsg;
+        errEl.classList.remove('hidden');
+      } else {
+        errEl.classList.add('hidden');
+      }
+      lucide.createIcons();
+    }
+
+    function hideAuthModal() {
+      document.getElementById('authModal').classList.add('hidden');
+    }
+
+    // 处理鉴权提交
+    document.getElementById('authForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const secret = document.getElementById('secretInput').value.trim();
+      const btn = document.getElementById('authSubmitBtn');
+      const errEl = document.getElementById('authErrorMsg');
+      
+      btn.disabled = true;
+      btn.innerHTML = `<i data-lucide="loader" class="w-4 h-4 animate-spin"></i> 正在校验凭证...`;
+      lucide.createIcons();
+      errEl.classList.add('hidden');
+
+      try {
+        const res = await fetch('/api/dashboard/auth', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ secret })
+        });
+        const data = await res.json();
+        if (data.code === 0 && data.token) {
+          state.token = data.token;
+          if (document.getElementById('rememberMeCheckbox').checked) {
+            localStorage.setItem('wehub_auth_token', data.token);
+          }
+          hideAuthModal();
+          loadAllData();
+        } else {
+          errEl.textContent = data.error || '秘钥错误，请重新核对';
+          errEl.classList.remove('hidden');
+        }
+      } catch (err) {
+        errEl.textContent = '网络连接异常，请稍后重试';
+        errEl.classList.remove('hidden');
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = `<span>验证并解锁工作台</span><i data-lucide="arrow-right" class="w-4 h-4"></i>`;
+        lucide.createIcons();
+      }
+    });
+
+    // 切换密码可见性
+    document.getElementById('toggleSecretEye').addEventListener('click', () => {
+      const inp = document.getElementById('secretInput');
+      inp.type = inp.type === 'password' ? 'text' : 'password';
+    });
+
+    // 锁定退出
+    document.getElementById('lockBtn').addEventListener('click', () => {
+      if (confirm('确认锁定并退出当前设备鉴权？')) {
+        localStorage.removeItem('wehub_auth_token');
+        state.token = '';
+        location.reload();
+      }
+    });
+
+    // 2. 加载总览统计
+    async function loadStats() {
+      try {
+        const stats = await apiFetch('/api/dashboard/stats');
+        document.getElementById('statInsightTotal').textContent = stats.insights?.total || 0;
+        document.getElementById('statInsightHigh').textContent = stats.insights?.high_score || 0;
+        document.getElementById('statInsightToday').textContent = stats.insights?.today || 0;
+
+        document.getElementById('statNotesTotal').textContent = stats.notes?.total || 0;
+        document.getElementById('statNotesUnsynced').textContent = stats.notes?.unsynced || 0;
+        document.getElementById('statNotesToday').textContent = stats.notes?.today || 0;
+
+        document.getElementById('statRadarTotal').textContent = stats.radar?.total || 0;
+        document.getElementById('statRadarHigh').textContent = stats.radar?.high_value || 0;
+        document.getElementById('statRadarZhihu').textContent = stats.radar?.zhihu || 0;
+        document.getElementById('statRadarTwitter').textContent = stats.radar?.twitter || 0;
+
+        document.getElementById('statMailTotal').textContent = stats.mail?.emails || 0;
+        document.getElementById('statPapersTotal').textContent = stats.mail?.papers || 0;
+        document.getElementById('statMailTasks').textContent = stats.mail?.tasks || 0;
+      } catch (err) {
+        console.warn('加载统计异常:', err);
+      }
+    }
+
+    // 3. 加载条目列表
+    async function loadItems(append = false) {
+      if (!append) {
+        state.offset = 0;
+        document.getElementById('loadingIndicator').classList.remove('hidden');
+        document.getElementById('emptyIndicator').classList.add('hidden');
+        document.getElementById('itemsContainer').innerHTML = '';
+      }
+
+      const params = new URLSearchParams({
+        app: state.currentApp,
+        q: state.searchKeyword,
+        min_score: state.minScore,
+        days: state.days,
+        limit: state.limit,
+        offset: state.offset
+      });
+
+      try {
+        const data = await apiFetch(`/api/dashboard/items?${params.toString()}`);
+        document.getElementById('loadingIndicator').classList.add('hidden');
+
+        const items = data.items || [];
+        if (!append && items.length === 0) {
+          document.getElementById('emptyIndicator').classList.remove('hidden');
+        } else {
+          document.getElementById('emptyIndicator').classList.add('hidden');
+        }
+
+        renderItems(items, append);
+
+        state.offset += items.length;
+        state.hasMore = state.offset < data.total;
+        
+        const loadMoreBtn = document.getElementById('loadMoreBtn');
+        if (state.hasMore) {
+          loadMoreBtn.classList.remove('hidden');
+        } else {
+          loadMoreBtn.classList.add('hidden');
+        }
+      } catch (err) {
+        console.error('加载条目失败:', err);
+        document.getElementById('loadingIndicator').classList.add('hidden');
+      }
+    }
+
+    // 渲染条目列表
+    function renderItems(items, append = false) {
+      const container = document.getElementById('itemsContainer');
+      const fragment = document.createDocumentFragment();
+
+      const appColors = {
+        insights: { badge: 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20', dot: 'bg-cyan-400' },
+        notes: { badge: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20', dot: 'bg-emerald-400' },
+        radar: { badge: 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20', dot: 'bg-indigo-400' },
+        mail: { badge: 'bg-amber-500/10 text-amber-400 border-amber-500/20', dot: 'bg-amber-400' },
+        papers: { badge: 'bg-rose-500/10 text-rose-400 border-rose-500/20', dot: 'bg-rose-400' }
+      };
+
+      items.forEach(item => {
+        const card = document.createElement('div');
+        const color = appColors[item.app] || appColors.notes;
+
+        if (state.viewMode === 'grid') {
+          // 网格卡片渲染
+          card.className = "cursor-pointer group rounded-2xl bg-slate-900/90 hover:bg-slate-850 border border-slate-800 hover:border-slate-700 p-4 sm:p-5 flex flex-col justify-between transition-all duration-200 hover:-translate-y-0.5 hover:shadow-xl hover:shadow-cyan-950/20";
+          card.innerHTML = `
+            <div>
+              <div class="flex items-center justify-between gap-2 mb-2.5">
+                <span class="text-[11px] font-semibold px-2 py-0.5 rounded-full border ${color.badge} flex items-center gap-1.5">
+                  <span class="w-1.5 h-1.5 rounded-full ${color.dot}"></span>
+                  ${item.app_name}
+                </span>
+                ${item.score > 0 ? `
+                  <span class="text-[11px] font-mono font-bold ${item.score >= 85 ? 'text-amber-400' : 'text-slate-400'} flex items-center gap-1">
+                    ${item.score >= 85 ? '🔥' : '★'} ${item.score}分
+                  </span>
+                ` : ''}
+              </div>
+
+              <h4 class="font-bold text-sm text-slate-100 group-hover:text-cyan-300 transition-colors line-clamp-2 leading-snug">
+                ${escapeHtml(item.title)}
+              </h4>
+
+              <p class="text-xs text-slate-400 mt-2 line-clamp-3 leading-relaxed">
+                ${escapeHtml(item.summary)}
+              </p>
+            </div>
+
+            <div class="mt-4 pt-3 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-slate-500">
+              <span class="truncate max-w-[120px]">${escapeHtml(item.author || '')}</span>
+              <div class="flex items-center gap-2 shrink-0">
+                ${item.chat_count > 0 ? `
+                  <span class="px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-400 text-[10px] font-mono flex items-center gap-1">
+                    <i data-lucide="message-square" class="w-3 h-3"></i> ${item.chat_count}
+                  </span>
+                ` : ''}
+                <span>${formatTimeAgo(item.created_at)}</span>
+              </div>
+            </div>
+          `;
+        } else {
+          // 紧凑列表渲染
+          card.className = "cursor-pointer group rounded-xl bg-slate-900/90 hover:bg-slate-850 border border-slate-800 hover:border-slate-700 px-4 py-3 flex items-center justify-between gap-4 transition-all";
+          card.innerHTML = `
+            <div class="flex items-center gap-3 min-w-0">
+              <span class="text-[10px] font-semibold px-2 py-0.5 rounded-full border ${color.badge} shrink-0">
+                ${item.app_name}
+              </span>
+              <h4 class="font-medium text-xs text-slate-200 group-hover:text-cyan-300 transition-colors truncate">
+                ${escapeHtml(item.title)}
+              </h4>
+            </div>
+            <div class="flex items-center gap-3 shrink-0 text-[11px] text-slate-500">
+              ${item.score > 0 ? `<span class="font-mono text-amber-400 font-bold">${item.score}分</span>` : ''}
+              <span>${formatTimeAgo(item.created_at)}</span>
+            </div>
+          `;
+        }
+
+        // 点击打开抽屉
+        card.addEventListener('click', () => openItemDetail(item));
+        fragment.appendChild(card);
+      });
+
+      if (!append) {
+        container.innerHTML = '';
+      }
+      container.appendChild(fragment);
+      lucide.createIcons();
+    }
+
+    // 4. 打开条目详情与对话抽屉
+    async function openItemDetail(item) {
+      state.currentItem = item;
+      const overlay = document.getElementById('drawerOverlay');
+      const panel = document.getElementById('drawerPanel');
+
+      // 填充基础元数据
+      document.getElementById('drawerBadge').textContent = item.app_name;
+      document.getElementById('drawerScore').textContent = item.score > 0 ? `🔥 ${item.score} 分` : '';
+      document.getElementById('drawerTitle').textContent = item.title;
+      document.getElementById('drawerAuthor').textContent = `信源/作者: ${item.author || '未知'}`;
+      document.getElementById('drawerTime').textContent = item.created_at;
+
+      // 外部链接按钮
+      const extLink = document.getElementById('drawerExternalLink');
+      if (item.url) {
+        extLink.href = item.url;
+        extLink.classList.remove('hidden');
+      } else {
+        extLink.classList.add('hidden');
+      }
+
+      // 标签渲染
+      const tagsEl = document.getElementById('drawerTags');
+      tagsEl.innerHTML = (item.tags || []).map(t => `
+        <span class="px-2 py-0.5 rounded-md bg-slate-800 text-slate-400 text-[11px] font-mono">${escapeHtml(t)}</span>
+      `).join('');
+
+      // Markdown 解析渲染
+      const mdHtml = DOMPurify.sanitize(marked.parse(item.content || item.summary || '无详细内容'));
+      document.getElementById('drawerMarkdown').innerHTML = mdHtml;
+
+      // 展开抽屉
+      overlay.classList.remove('hidden');
+      requestAnimationFrame(() => {
+        panel.classList.remove('translate-x-full');
+      });
+
+      // 拉取该条目关联的历史对话记录
+      await loadItemChatHistory(item.app, item.raw_id);
+      lucide.createIcons();
+    }
+
+    // 关闭抽屉
+    function closeDrawer() {
+      const overlay = document.getElementById('drawerOverlay');
+      const panel = document.getElementById('drawerPanel');
+      panel.classList.add('translate-x-full');
+      setTimeout(() => overlay.classList.add('hidden'), 250);
+    }
+    document.getElementById('closeDrawerBtn').addEventListener('click', closeDrawer);
+    document.getElementById('drawerOverlay').addEventListener('click', (e) => {
+      if (e.target === document.getElementById('drawerOverlay')) closeDrawer();
+    });
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') closeDrawer();
+      if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+        e.preventDefault();
+        document.getElementById('searchInput').focus();
+      }
+    });
+
+    // 5. 加载历史对话
+    async function loadItemChatHistory(app, rawId) {
+      const stream = document.getElementById('chatHistoryStream');
+      stream.innerHTML = '';
+      try {
+        const res = await apiFetch(`/api/dashboard/item?app=${app}&id=${rawId}`);
+        const history = res.chat_history || [];
+        document.getElementById('drawerChatCount').textContent = `${history.length} 条对话`;
+        
+        history.forEach(msg => appendChatBubble(msg.role, msg.content, msg.created_at));
+      } catch (err) {
+        console.warn('拉取对话历史异常:', err);
+      }
+    }
+
+    // 插入聊天气泡
+    function appendChatBubble(role, content, timeStr = '') {
+      const stream = document.getElementById('chatHistoryStream');
+      const isUser = role === 'user';
+      const bubble = document.createElement('div');
+      bubble.className = `flex gap-2.5 ${isUser ? 'justify-end' : 'justify-start'}`;
+
+      const formattedContent = isUser 
+        ? escapeHtml(content)
+        : DOMPurify.sanitize(marked.parse(content));
+
+      bubble.innerHTML = `
+        ${!isUser ? `
+          <div class="w-6 h-6 rounded-md bg-gradient-to-tr from-cyan-500 to-indigo-500 flex items-center justify-center text-white shrink-0 mt-1 shadow-sm">
+            <i data-lucide="bot" class="w-3.5 h-3.5"></i>
+          </div>
+        ` : ''}
+        <div class="max-w-[85%] rounded-2xl px-4 py-2.5 text-xs ${
+          isUser 
+            ? 'bg-gradient-to-r from-cyan-600 to-indigo-600 text-white rounded-tr-sm shadow-md' 
+            : 'bg-slate-950 border border-slate-800 text-slate-200 rounded-tl-sm prose-dark shadow-sm'
+        }">
+          <div>${formattedContent}</div>
+          ${timeStr ? `<div class="text-[10px] mt-1.5 opacity-60 text-right">${timeStr.substring(11, 16)}</div>` : ''}
+        </div>
+      `;
+      stream.appendChild(bubble);
+      lucide.createIcons();
+      bubble.scrollIntoView({ behavior: 'smooth' });
+    }
+
+    // 6. 发起交互追问
+    async function sendChatQuestion(question) {
+      if (!question || !question.trim() || !state.currentItem) return;
+      const inp = document.getElementById('chatInput');
+      const sendBtn = document.getElementById('sendChatBtn');
+      const loader = document.getElementById('chatLoadingIndicator');
+
+      inp.value = '';
+      sendBtn.disabled = true;
+      loader.classList.remove('hidden');
+
+      // 立即在前端上屏 User 消息
+      appendChatBubble('user', question, new Date().toLocaleTimeString());
+
+      try {
+        const res = await apiFetch('/api/dashboard/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            app: state.currentItem.app,
+            raw_id: state.currentItem.raw_id,
+            question: question.trim()
+          })
+        });
+
+        if (res.code === 0 && res.reply) {
+          appendChatBubble('assistant', res.reply, res.created_at);
+        } else {
+          appendChatBubble('assistant', `⚠️ 追问回答失败: ${res.error || '未知异常'}`);
+        }
+      } catch (err) {
+        appendChatBubble('assistant', `⚠️ 发送异常: 无法连接至大模型服务`);
+      } finally {
+        sendBtn.disabled = false;
+        loader.classList.add('hidden');
+      }
+    }
+
+    // 绑定发送按钮与键盘事件
+    document.getElementById('sendChatBtn').addEventListener('click', () => {
+      sendChatQuestion(document.getElementById('chatInput').value);
+    });
+    document.getElementById('chatInput').addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault();
+        sendChatQuestion(document.getElementById('chatInput').value);
+      }
+    });
+
+    // 快捷提问气泡点击
+    document.querySelectorAll('.quick-chip').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const q = btn.textContent.replace(/[💡🏗️⚠️⚡🚀📚]/g, '').trim();
+        sendChatQuestion(q);
+      });
+    });
+
+    // 7. 切换 App Tabs
+    document.querySelectorAll('.app-tab').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.app-tab').forEach(b => {
+          b.className = "app-tab px-3.5 py-1.5 rounded-xl text-xs font-medium text-slate-300 hover:text-white hover:bg-slate-800 transition-all whitespace-nowrap flex items-center gap-1.5";
+        });
+        btn.className = "app-tab px-3.5 py-1.5 rounded-xl text-xs font-semibold bg-cyan-500 text-slate-950 shadow-sm transition-all whitespace-nowrap";
+        
+        state.currentApp = btn.getAttribute('data-app');
+        loadItems(false);
+      });
+    });
+
+    // 搜索防抖
+    let searchDebounce = null;
+    document.getElementById('searchInput').addEventListener('input', (e) => {
+      clearTimeout(searchDebounce);
+      searchDebounce = setTimeout(() => {
+        state.searchKeyword = e.target.value.trim();
+        loadItems(false);
+      }, 350);
+    });
+
+    // 评分过滤
+    document.getElementById('scoreFilter').addEventListener('change', (e) => {
+      state.minScore = parseInt(e.target.value) || 0;
+      loadItems(false);
+    });
+
+    // 时间过滤
+    document.getElementById('timeFilter').addEventListener('change', (e) => {
+      state.days = parseInt(e.target.value) || 0;
+      loadItems(false);
+    });
+
+    // 视图切换
+    document.getElementById('viewGridBtn').addEventListener('click', () => {
+      state.viewMode = 'grid';
+      document.getElementById('viewGridBtn').className = "p-1 rounded-lg bg-slate-800 text-cyan-400";
+      document.getElementById('viewListBtn').className = "p-1 rounded-lg text-slate-400 hover:text-white";
+      document.getElementById('itemsContainer').className = "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4";
+      loadItems(false);
+    });
+
+    document.getElementById('viewListBtn').addEventListener('click', () => {
+      state.viewMode = 'list';
+      document.getElementById('viewListBtn').className = "p-1 rounded-lg bg-slate-800 text-cyan-400";
+      document.getElementById('viewGridBtn').className = "p-1 rounded-lg text-slate-400 hover:text-white";
+      document.getElementById('itemsContainer').className = "flex flex-col gap-2";
+      loadItems(false);
+    });
+
+    // 刷新与加载更多
+    document.getElementById('refreshBtn').addEventListener('click', () => {
+      loadStats();
+      loadItems(false);
+    });
+    document.getElementById('loadMoreBtn').addEventListener('click', () => loadItems(true));
+
+    // 明暗主题切换
+    document.getElementById('themeToggleBtn').addEventListener('click', () => {
+      const isDark = document.documentElement.classList.toggle('dark');
+      localStorage.setItem('wehub_theme', isDark ? 'dark' : 'light');
+    });
+
+    // HTML 转义防注入
+    function escapeHtml(str) {
+      if (!str) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+
+    // 启动全域数据加载
+    function loadAllData() {
+      loadStats();
+      loadItems(false);
+      lucide.createIcons();
+    }
+
+    // 页面入口
+    window.addEventListener('DOMContentLoaded', checkAuth);
+  </script>
+</body>
+</html>

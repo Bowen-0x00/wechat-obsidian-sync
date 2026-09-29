@@ -19,6 +19,7 @@ try:
     from .llm_enhancer import LLMEnhancer
     from .storage import InboxStorage
     from .wechat_client import WeComClient
+    from .dashboard_service import DashboardService
 except ImportError:
     from wxcrypt import WXBizMsgCrypt
     from parser import MessageParser, WeChatMessage
@@ -26,6 +27,7 @@ except ImportError:
     from llm_enhancer import LLMEnhancer
     from storage import InboxStorage
     from wechat_client import WeComClient
+    from dashboard_service import DashboardService
 
 
 class WeChatObsidianServer:
@@ -119,6 +121,9 @@ class WeChatObsidianServer:
 
         # 异步线程池处理耗时的网络爬虫与大模型请求，避免阻塞微信回调
         self.executor = ThreadPoolExecutor(max_workers=8)
+
+        # 初始化统一多应用数据看板服务管理器
+        self.dashboard = DashboardService(self.cfg)
 
     def _submit_background(self, func, *args):
         """提交后台任务，并确保线程内异常不会被 Future 静默吞掉."""
@@ -940,15 +945,90 @@ class RequestHandler(BaseHTTPRequestHandler):
     server_instance: WeChatObsidianServer = None
 
     def _check_auth(self, query_params) -> bool:
-        """校验客户端同步请求密钥."""
+        """校验客户端同步请求密钥，兼顾 Obsidian 插件秘钥与数据看板安全 Token."""
         secret_param = query_params.get("secret", [""])[0]
         auth_header = self.headers.get("Authorization", "").replace("Bearer ", "").strip()
         expected = self.server_instance.api_secret
-        return secret_param == expected or auth_header == expected
+        if secret_param == expected or auth_header == expected:
+            return True
+        if hasattr(self.server_instance, "dashboard") and self.server_instance.dashboard:
+            return self.server_instance.dashboard.verify_auth(secret_param or auth_header)
+        return False
 
     def do_GET(self):
         parsed = urlparse(self.path)
         params = parse_qs(parsed.query)
+
+        # 0. 统一数据看板单页应用: GET / 或 GET /dashboard 或 GET /index.html
+        if parsed.path in ("/", "/dashboard", "/dashboard/", "/index.html"):
+            msg_signature = params.get("msg_signature", [""])[0]
+            echostr = params.get("echostr", [""])[0]
+            # 仅当携带微信握手验签参数时才走微信验证，否则展示统一数据看板 Web 界面
+            if not (msg_signature and echostr):
+                web_index = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web", "index.html")
+                if os.path.exists(web_index):
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.end_headers()
+                    with open(web_index, "rb") as f:
+                        self.wfile.write(f.read())
+                    return
+
+        # 0.1 看板 API: GET /api/dashboard/stats
+        if parsed.path == "/api/dashboard/stats":
+            if not self._check_auth(params):
+                self.send_response(401)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(json.dumps({"code": 401, "error": "Unauthorized: 访问受限，请先鉴权"}).encode())
+                return
+            stats = self.server_instance.dashboard.get_stats()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps(stats, ensure_ascii=False).encode())
+            return
+
+        # 0.2 看板 API: GET /api/dashboard/items
+        if parsed.path == "/api/dashboard/items":
+            if not self._check_auth(params):
+                self.send_response(401)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(json.dumps({"code": 401, "error": "Unauthorized: 访问受限，请先鉴权"}).encode())
+                return
+            app = params.get("app", ["all"])[0]
+            q = params.get("q", [""])[0]
+            min_score = int(params.get("min_score", ["0"])[0]) if params.get("min_score", ["0"])[0].isdigit() else 0
+            days = int(params.get("days", ["0"])[0]) if params.get("days", ["0"])[0].isdigit() else 0
+            limit = int(params.get("limit", ["30"])[0]) if params.get("limit", ["30"])[0].isdigit() else 30
+            offset = int(params.get("offset", ["0"])[0]) if params.get("offset", ["0"])[0].isdigit() else 0
+
+            res = self.server_instance.dashboard.get_items(
+                app=app, q=q, min_score=min_score, days=days, limit=limit, offset=offset
+            )
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps(res, ensure_ascii=False).encode())
+            return
+
+        # 0.3 看板 API: GET /api/dashboard/item
+        if parsed.path == "/api/dashboard/item":
+            if not self._check_auth(params):
+                self.send_response(401)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(json.dumps({"code": 401, "error": "Unauthorized: 访问受限，请先鉴权"}).encode())
+                return
+            app = params.get("app", [""])[0]
+            raw_id = params.get("id", [""])[0]
+            res = self.server_instance.dashboard.get_item_detail(app=app, raw_id=raw_id)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps(res, ensure_ascii=False).encode())
+            return
 
         # 1. 微信接口握手验证 (GET /wechat 或 GET /)
         if parsed.path in ("/wechat", "/obsidian", "/"):
@@ -1054,6 +1134,54 @@ class RequestHandler(BaseHTTPRequestHandler):
         params = parse_qs(parsed.query)
         content_len = int(self.headers.get("Content-Length", 0))
         post_body = self.rfile.read(content_len).decode("utf-8", errors="replace")
+
+        # 0.1 看板安全鉴权门禁: POST /api/dashboard/auth
+        if parsed.path == "/api/dashboard/auth":
+            try:
+                data = json.loads(post_body)
+                secret = (data.get("secret") or "").strip()
+                if self.server_instance.dashboard.verify_auth(secret):
+                    token = self.server_instance.dashboard.generate_token(self.server_instance.api_secret)
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json; charset=utf-8")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"code": 0, "token": token, "expires_in_days": 90}).encode())
+                else:
+                    self.send_response(401)
+                    self.send_header("Content-Type", "application/json; charset=utf-8")
+                    self.end_headers()
+                    self.wfile.write(json.dumps({"code": 401, "error": "访问秘钥无效，请核对后重试"}).encode())
+            except Exception as e:
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(json.dumps({"code": 400, "error": str(e)}).encode())
+            return
+
+        # 0.2 看板交互追问: POST /api/dashboard/chat
+        if parsed.path == "/api/dashboard/chat":
+            if not self._check_auth(params):
+                self.send_response(401)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(json.dumps({"code": 401, "error": "Unauthorized: 访问受限，请先鉴权"}).encode())
+                return
+            try:
+                data = json.loads(post_body)
+                app = data.get("app", "")
+                raw_id = str(data.get("raw_id", ""))
+                question = data.get("question", "")
+                res = self.server_instance.dashboard.chat_with_item(app=app, raw_id=raw_id, question=question)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(json.dumps(res, ensure_ascii=False).encode())
+            except Exception as e:
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(json.dumps({"code": 500, "error": str(e)}).encode())
+            return
 
         # 1. 微信消息推送回调: POST /wechat 或 POST /
         if parsed.path in ("/wechat", "/obsidian", "/"):
