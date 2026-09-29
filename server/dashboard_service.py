@@ -231,13 +231,13 @@ class DashboardService:
         items = []
         try:
             with conn:
-                sql = "SELECT id, msg_id, msg_type, from_user, title, author, url, tldr_text, key_points_text, tags_text, media_filename, content_markdown, is_synced, created_at FROM inbox_notes WHERE 1=1"
+                sql = "SELECT id, msg_id, msg_type, from_user, title, author, url, tldr, key_points, tags, media_filename, content_markdown, is_synced, created_at FROM inbox_notes WHERE 1=1"
                 params = []
                 if cutoff:
                     sql += " AND created_at >= ?"
                     params.append(cutoff)
                 if q:
-                    sql += " AND (title LIKE ? OR tldr_text LIKE ? OR content_markdown LIKE ?)"
+                    sql += " AND (title LIKE ? OR tldr LIKE ? OR content_markdown LIKE ?)"
                     params.extend([f"%{q}%", f"%{q}%", f"%{q}%"])
                 sql += " ORDER BY id DESC LIMIT ?"
                 params.append(limit + offset)
@@ -245,7 +245,7 @@ class DashboardService:
                 for r in conn.execute(sql, params).fetchall():
                     tags = []
                     try:
-                        tags = json.loads(r["tags_text"]) if r["tags_text"] else []
+                        tags = json.loads(r["tags"]) if r["tags"] else []
                     except Exception:
                         pass
                     # 查询对话轮数
@@ -265,8 +265,8 @@ class DashboardService:
                         "author": r["author"] or r["from_user"] or "微信用户",
                         "url": r["url"] or "",
                         "score": 0,
-                        "summary": r["tldr_text"] or (r["content_markdown"][:160] if r["content_markdown"] else "无正文"),
-                        "content": r["content_markdown"] or r["tldr_text"] or "",
+                        "summary": r["tldr"] or (r["content_markdown"][:160] if r["content_markdown"] else "无正文"),
+                        "content": r["content_markdown"] or r["tldr"] or "",
                         "tags": tags,
                         "created_at": r["created_at"] or "",
                         "chat_count": chat_cnt,
@@ -657,7 +657,7 @@ class DashboardService:
                 return {"code": 404, "error": f"未找到 ID 为 {raw_id} 的笔记"}
 
             title = note_row["title"] or f"笔记 #{raw_id}"
-            content = note_row["content_markdown"] or note_row["tldr_text"] or note_row["raw_content"] or ""
+            content = note_row["content_markdown"] or note_row["tldr"] or note_row["raw_content"] or ""
 
             # 优先复用 insight_extractor 或 direct LLM
             prompt = f"你是博文的个人知识助手。请基于笔记内容回答用户的问题。\n\n【笔记标题】: {title}\n【笔记全文】:\n{content}\n\n用户问题: {question}"
