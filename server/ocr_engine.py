@@ -45,7 +45,8 @@ def get_ocr_engine():
         _ocr_instance = RapidOCR(
             intra_op_num_threads=1,
             inter_op_num_threads=1,
-            det_limit_side_len=640
+            det_limit_side_len=640,
+            use_angle_cls=False
         )
         logger.info("[OCR] RapidOCR 本地轻量引擎初始化成功 (单线程防卡死模式)")
         return _ocr_instance
@@ -80,7 +81,7 @@ def download_image_bytes(url: str, timeout: int = 12) -> Optional[bytes]:
         return None
 
 
-def _prepare_safe_image_slices(image_bytes: bytes, max_width: int = 960, slice_height: int = 1200, max_slices: int = 2) -> List[bytes]:
+def _prepare_safe_image_slices(image_bytes: bytes, max_width: int = 800, slice_height: int = 1280, max_slices: int = 1) -> List[bytes]:
     """
     将大图或超长微信长图缩放并切分为安全的轻量切片，彻底杜绝超长图直接送入 ONNX 导致内存暴涨卡死.
     """
@@ -139,7 +140,7 @@ class OCREngine:
             for s_bytes in slices:
                 if not has_sufficient_memory(400):
                     break
-                results, _ = engine(s_bytes)
+                results, _ = engine(s_bytes, use_cls=False)
                 if not results:
                     continue
                 for item in results:
@@ -155,8 +156,8 @@ class OCREngine:
             return ""
 
     @classmethod
-    def extract_text_from_images(cls, image_urls: List[str], max_images: int = 3) -> str:
-        """批量下载并提取多张图片中的文字 (默认最多处理前 3 张关键图片，防止高负载阻塞)."""
+    def extract_text_from_images(cls, image_urls: List[str], max_images: int = 2) -> str:
+        """批量下载并提取多张图片中的文字 (默认最多处理前 2 张关键图片，防止高负载阻塞)."""
         if not image_urls:
             return ""
         if not has_sufficient_memory(450):

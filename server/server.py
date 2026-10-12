@@ -265,7 +265,7 @@ class WeChatObsidianServer:
                     from .ocr_engine import OCREngine
                 except ImportError:
                     from ocr_engine import OCREngine
-                ocr_text = OCREngine.extract_text_from_images(article.images, max_images=3)
+                ocr_text = OCREngine.extract_text_from_images(article.images, max_images=2)
                 if ocr_text:
                     logger.info(f"[Server] 本地 RapidOCR 提取成功，文字长度: {len(ocr_text)}")
                     content_text = f"【长图提取正文】:\n{ocr_text}\n\n{content_text}".strip()
