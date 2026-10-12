@@ -197,20 +197,24 @@ class WeChatObsidianServer:
         ocr_text = ""
         error = None
 
+        raw_hint = (getattr(article, "summary_hint", "") or "").strip()
+        official_digest = raw_hint if (raw_hint and raw_hint != "[知乎反爬限制]") else ""
+
         # 1. 基础 Markdown 与正文处理
         if article.content_markdown and len(article.content_markdown.strip()) > 30:
             content_markdown = article.content_markdown
             content_text = article.content_text
+            if official_digest and official_digest not in content_markdown:
+                content_markdown = f"> [!quote] 公众号官方摘要\n> {official_digest}\n\n" + content_markdown
             if user_note_text:
                 content_markdown = f"> [!note] 随附笔记\n> {user_note_text}\n\n" + content_markdown
         else:
-            fallback_content = user_note_text.strip()
+            fallback_content = user_note_text.strip() or official_digest
             content_text = fallback_content or title
             if fallback_content:
                 content_markdown = f"> [!quote] 摘要内容\n> {fallback_content}\n\n> 🔗 原文链接: [{title}]({url})\n"
             else:
                 content_markdown = f"> [!info] 收藏链接\n> 🔗 [{title}]({url})\n> *(正文触发站点反爬防护，已自动记录链接与标题)*\n"
-
         # 2. 判断是否触发强制视觉大模型解析 (force_vision: 用户带指令 /v 或 /vision)
         if force_vision and getattr(article, "images", None):
             logger.info(f"[Server] 触发多模态视觉大模型解析 (/v, /vision): 发现 {len(article.images)} 张图片")
@@ -248,7 +252,8 @@ class WeChatObsidianServer:
             return tldr, key_points, tags, ocr_text, content_markdown, content_text, error
 
         # 3. 默认模式：检测是否为纯图推文 (正文字数极少且包含图片)，自动执行本地 RapidOCR
-        is_sparse_text = len(content_text.strip()) < 100 or content_text.strip() == title.strip()
+        body_text = (getattr(article, "content_text", "") or "").strip()
+        is_sparse_text = len(body_text) < 100 or body_text == title.strip()
         has_images = bool(getattr(article, "images", None))
 
         if is_sparse_text and has_images:
@@ -300,6 +305,9 @@ class WeChatObsidianServer:
             except Exception as e:
                 logger.warning(f"[Server] 本地 OCR 提取异常: {e}")
         # 4. 常规纯文本大模型生成核心速读与标签
+        if official_digest and official_digest not in content_text:
+            content_text = f"【官方摘要】: {official_digest}\n\n{content_text}".strip()
+
         ai_res = self.llm.summarize_article(title, content_text, url)
         tldr = ai_res.get("tldr", "")
         key_points = ai_res.get("key_points", [])

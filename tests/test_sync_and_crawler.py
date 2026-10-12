@@ -91,6 +91,31 @@ def test_crawler_cookie_update():
     assert crawler.zhihu_cookie == "test_cookie_12345"
 
 
+
+def test_wechat_captcha_detection_and_official_digest():
+    """测试微信环境验证拦截检测 (wappoc_appmsgcaptcha) 与官方摘要 (msg_desc) 提取."""
+    crawler = ArticleCrawler()
+    assert crawler._is_wechat_captcha_or_invalid("<html>secitptpage/verify</html>", "https://mp.weixin.qq.com/s/1") is True
+    assert crawler._is_wechat_captcha_or_invalid("<html>normal</html>", "https://mp.weixin.qq.com/mp/wappoc_appmsgcaptcha") is True
+
+    wx_html = """
+    <html>
+      <script>
+        var msg_title = '存算一体架构年度综述';
+        var nickname = htmlDecode('芯片架构前沿');
+        var msg_desc = '本文系统梳理了2026年高带宽存算一体芯片的三大演进方向。';
+      </script>
+      <body>
+        <div id="js_content"><p>正文第一段</p></div>
+      </body>
+    </html>
+    """
+    assert crawler._is_wechat_captcha_or_invalid(wx_html, "https://mp.weixin.qq.com/s/ok") is False
+    art = crawler._parse_html(wx_html, "https://mp.weixin.qq.com/s/ok", "")
+    assert art.title == "存算一体架构年度综述"
+    assert art.author == "芯片架构前沿"
+    assert art.summary_hint == "本文系统梳理了2026年高带宽存算一体芯片的三大演进方向。"
+
 def test_storage_reset_synced_status():
     """测试 Storage 同步状态重置功能."""
     with tempfile.TemporaryDirectory() as tmpdir:

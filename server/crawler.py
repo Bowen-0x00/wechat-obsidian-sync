@@ -91,6 +91,22 @@ class ArticleCrawler:
         else:
             self.session.proxies = {}
 
+    @staticmethod
+    def _is_wechat_captcha_or_invalid(html_content: str, resp_url: str = "") -> bool:
+        """检测微信是否返回环境验证/验证码拦截页面 (wappoc_appmsgcaptcha / secitptpage/verify)."""
+        if not html_content:
+            return True
+        if "wappoc_appmsgcaptcha" in resp_url or "secitptpage/verify" in html_content:
+            return True
+        if (
+            'id="js_content"' not in html_content
+            and "id='js_content'" not in html_content
+            and "rich_media_content" not in html_content
+            and "activity-name" not in html_content
+        ):
+            return True
+        return False
+
     def crawl(self, url: str, title_hint: str = "") -> CrawledArticle:
         """根据 URL 抓取网页标题、作者与纯文本正文以及完整 Markdown."""
         clean_url = url.strip()
@@ -128,13 +144,21 @@ class ArticleCrawler:
 
         try:
             if "mp.weixin.qq.com" in clean_url:
+                import time
                 resp = None
-                for headers in self.wechat_headers_candidates:
+                max_retries = 3
+                for attempt in range(max_retries):
+                    headers = self.wechat_headers_candidates[attempt % len(self.wechat_headers_candidates)]
                     resp = self.session.get(clean_url, headers=headers, timeout=self.timeout)
-                    # 如果未被重定向到验证码页面，且成功包含正文或标题节点，立即解析
-                    if "wappoc_appmsgcaptcha" not in resp.url and ("activity-name" in resp.text or "js_content" in resp.text):
-                        resp.encoding = "utf-8"
+                    resp.encoding = "utf-8"
+                    if not self._is_wechat_captcha_or_invalid(resp.text, resp.url):
                         return self._parse_html(resp.text, clean_url, title_hint)
+                    if attempt < max_retries - 1:
+                        logger.warning(f"[Crawler] 微信触发环境验证拦截，正在重置会话重试 ({attempt + 1}/{max_retries}): {clean_url[:80]}")
+                        time.sleep(1.2 * (attempt + 1))
+                        self.session = requests.Session()
+                        if self.proxy:
+                            self.session.proxies = {"http": self.proxy, "https": self.proxy}
                 # 兜底解析
                 if resp is not None:
                     resp.encoding = "utf-8"
@@ -397,6 +421,7 @@ class ArticleCrawler:
 
         # 1. 针对微信公众号文章专门解析
         if "mp.weixin.qq.com" in url:
+            import html as html_mod
             title = ""
             t_tag = soup.find(id="activity-name")
             if t_tag:
@@ -406,19 +431,37 @@ class ArticleCrawler:
                 if og_title:
                     title = og_title.get("content", "").strip()
             if not title:
-                # 尝试从 js 中提取 msg_title
-                title_match = re.search(r'var\s+msg_title\s*=\s*[\'"]([^\'"]+)[\'"]', html)
+                title_match = re.search(r'var\s+msg_title\s*=\s*(?:htmlDecode\()?[\'"]([^\'"]+)[\'"]', html)
                 if title_match:
                     title = title_match.group(1).strip()
+            if title:
+                title = html_mod.unescape(title).strip()
 
             author = ""
             a_tag = soup.find(id="js_name") or soup.find(class_="rich_media_meta_text")
             if a_tag:
                 author = a_tag.get_text(strip=True)
             if not author:
-                author_match = re.search(r'var\s+nickname\s*=\s*[\'"]([^\'"]+)[\'"]', html)
+                author_match = re.search(r'var\s+nickname\s*=\s*(?:htmlDecode\()?[\'"]([^\'"]+)[\'"]', html)
                 if author_match:
                     author = author_match.group(1).strip()
+            if not author:
+                og_author = soup.find("meta", property="og:article:author")
+                if og_author and og_author.get("content"):
+                    author = og_author.get("content", "").strip()
+            if author:
+                author = html_mod.unescape(author).strip()
+
+            # 提取微信官方摘要 (msg_desc / og:description)
+            digest = ""
+            m_digest = re.search(r'var\s+msg_desc\s*=\s*(?:htmlDecode\()?[\'"]([^\'"]+)[\'"]', html)
+            if m_digest:
+                digest = html_mod.unescape(m_digest.group(1)).strip()
+            else:
+                og_desc = soup.find("meta", property="og:description")
+                if og_desc and og_desc.get("content"):
+                    digest = html_mod.unescape(og_desc.get("content", "")).strip()
+            digest = digest.replace("\\x0a", "\n").replace("\\n", "\n").strip()
 
             content_div = soup.find(id="js_content")
             if content_div:
@@ -438,6 +481,7 @@ class ArticleCrawler:
                 content_text=content_text[:8000],  # 截取前 8000 字供大模型精读
                 content_markdown=content_markdown,
                 url=url,
+                summary_hint=digest,
                 images=images
             )
 
