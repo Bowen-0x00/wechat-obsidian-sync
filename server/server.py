@@ -1457,6 +1457,54 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps({"code": 500, "error": str(e)}).encode())
             return
 
+        # 0.3 看板编辑条目: POST /api/dashboard/item/update
+        if parsed.path == "/api/dashboard/item/update":
+            if not self._check_auth(params):
+                self.send_response(401)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(json.dumps({"code": 401, "error": "Unauthorized: 访问受限，请先鉴权"}).encode())
+                return
+            try:
+                data = json.loads(post_body)
+                app = data.get("app", "")
+                raw_id = str(data.get("raw_id", ""))
+                res = self.server_instance.dashboard.update_item(app=app, raw_id=raw_id, data=data)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(json.dumps(res, ensure_ascii=False).encode())
+            except Exception as e:
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(json.dumps({"code": 500, "error": str(e)}).encode())
+            return
+
+        # 0.4 看板删除条目: POST /api/dashboard/item/delete
+        if parsed.path == "/api/dashboard/item/delete":
+            if not self._check_auth(params):
+                self.send_response(401)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(json.dumps({"code": 401, "error": "Unauthorized: 访问受限，请先鉴权"}).encode())
+                return
+            try:
+                data = json.loads(post_body)
+                app = data.get("app", "")
+                raw_id = str(data.get("raw_id", ""))
+                res = self.server_instance.dashboard.delete_item(app=app, raw_id=raw_id)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(json.dumps(res, ensure_ascii=False).encode())
+            except Exception as e:
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(json.dumps({"code": 500, "error": str(e)}).encode())
+            return
+
         # 1. 微信消息推送回调: POST /wechat 或 POST /
         if parsed.path in ("/wechat", "/obsidian", "/"):
             msg_signature = params.get("msg_signature", [""])[0]

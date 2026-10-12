@@ -285,6 +285,14 @@
           <span id="drawerScore" class="text-xs font-bold text-amber-400 flex items-center gap-1 font-mono"></span>
         </div>
         <div class="flex items-center gap-2">
+          <button id="editItemBtn" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-cyan-500/20 text-slate-300 hover:text-cyan-400 border border-slate-700/70 hover:border-cyan-500/40 text-xs font-medium flex items-center gap-1 transition-colors" title="编辑内容">
+            <i data-lucide="edit-3" class="w-3.5 h-3.5"></i>
+            <span>编辑</span>
+          </button>
+          <button id="deleteItemBtn" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-red-500/20 text-slate-300 hover:text-red-400 border border-slate-700/70 hover:border-red-500/40 text-xs font-medium flex items-center gap-1 transition-colors" title="删除条目">
+            <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+            <span>删除</span>
+          </button>
           <a id="drawerExternalLink" href="#" target="_blank" class="p-1.5 rounded-lg bg-slate-800 text-slate-400 hover:text-cyan-400 transition-colors hidden" title="在原网页打开">
             <i data-lucide="external-link" class="w-4 h-4"></i>
           </a>
@@ -430,6 +438,65 @@
   </div>
 
   <!-- ===================================================================== -->
+  <!-- 4.5 条目编辑弹窗 (Edit Item Modal) -->
+  <!-- ===================================================================== -->
+  <div id="editModal" class="fixed inset-0 bg-slate-950/85 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+    <div class="max-w-2xl w-full bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl flex flex-col max-h-[90vh] overflow-hidden">
+      <div class="px-6 py-4 border-b border-slate-800 flex items-center justify-between">
+        <div class="flex items-center gap-2">
+          <i data-lucide="edit-3" class="w-4 h-4 text-cyan-400"></i>
+          <h3 class="text-base font-bold text-slate-100">编辑条目内容</h3>
+        </div>
+        <button type="button" id="closeEditModalBtn" class="p-1.5 rounded-lg bg-slate-800 text-slate-400 hover:text-white transition-colors">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+
+      <form id="editForm" class="p-6 space-y-4 overflow-y-auto flex-1 text-xs">
+        <div>
+          <label class="block font-medium text-slate-300 mb-1">标题</label>
+          <input type="text" id="editTitleInput" required class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-sm text-slate-100 focus:outline-none focus:ring-1 focus:ring-cyan-500" />
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div>
+            <label class="block font-medium text-slate-300 mb-1">作者 / 来源</label>
+            <input type="text" id="editAuthorInput" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-slate-200 focus:outline-none focus:ring-1 focus:ring-cyan-500" />
+          </div>
+          <div>
+            <label class="block font-medium text-slate-300 mb-1">标签 (空格或逗号分隔)</label>
+            <input type="text" id="editTagsInput" placeholder="#AI芯片 #长图文" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-slate-200 font-mono focus:outline-none focus:ring-1 focus:ring-cyan-500" />
+          </div>
+          <div>
+            <label class="block font-medium text-slate-300 mb-1">价值评分 (0-100)</label>
+            <input type="number" id="editScoreInput" min="0" max="100" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-slate-200 font-mono focus:outline-none focus:ring-1 focus:ring-cyan-500" />
+          </div>
+        </div>
+
+        <div>
+          <label class="block font-medium text-slate-300 mb-1">原文链接 (URL)</label>
+          <input type="text" id="editUrlInput" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-slate-300 font-mono focus:outline-none focus:ring-1 focus:ring-cyan-500" />
+        </div>
+
+        <div>
+          <label class="block font-medium text-slate-300 mb-1">核心速读 / 摘要 (TLDR)</label>
+          <textarea id="editSummaryInput" rows="3" class="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-slate-200 leading-relaxed focus:outline-none focus:ring-1 focus:ring-cyan-500"></textarea>
+        </div>
+
+        <div>
+          <label class="block font-medium text-slate-300 mb-1">完整正文内容 (支持 Markdown)</label>
+          <textarea id="editContentInput" rows="9" class="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-slate-200 font-mono leading-relaxed focus:outline-none focus:ring-1 focus:ring-cyan-500"></textarea>
+        </div>
+
+        <div class="pt-2 flex items-center justify-end gap-2.5 border-t border-slate-800">
+          <button type="button" id="cancelEditBtn" class="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium transition-colors">取消</button>
+          <button type="submit" id="saveEditBtn" class="px-5 py-2 rounded-xl bg-gradient-to-r from-cyan-500 to-indigo-600 hover:from-cyan-400 hover:to-indigo-500 text-slate-950 font-bold shadow-md transition-all">保存修改</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
   <!-- 5. 核心前端交互引擎 JS -->
   <!-- ===================================================================== -->
   <script>
@@ -467,13 +534,17 @@
     // 格式化相对时间
     function formatTimeAgo(timeStr) {
       if (!timeStr) return '';
-      const d = new Date(timeStr.replace(/-/g, '/'));
+      const clean = String(timeStr).trim();
+      // 统一按北京时间 (UTC+8) 解析，消除跨端时区偏差
+      const isoStr = clean.length >= 19 ? clean.substring(0, 19).replace(' ', 'T') + '+08:00' : clean.replace(/-/g, '/');
+      const d = new Date(isoStr);
+      if (isNaN(d.getTime())) return clean.substring(0, 16);
       const diffSec = Math.floor((Date.now() - d.getTime()) / 1000);
-      if (diffSec < 60) return '刚刚';
-      if (diffSec < 3600) return `${Math.floor(diffSec / 60)} 分钟前`;
-      if (diffSec < 86400) return `${Math.floor(diffSec / 3600)} 小时前`;
-      if (diffSec < 86400 * 3) return `${Math.floor(diffSec / 86400)} 天前`;
-      return timeStr.substring(0, 16);
+      const hhmm = clean.length >= 16 ? clean.substring(11, 16) : '';
+      if (diffSec < 60 && diffSec >= -60) return `刚刚 ${hhmm}`;
+      if (diffSec >= 60 && diffSec < 3600) return `${Math.floor(diffSec / 60)}分钟前 (${hhmm})`;
+      if (diffSec >= 3600 && diffSec < 86400) return `${Math.floor(diffSec / 3600)}小时前 (${hhmm})`;
+      return clean.substring(5, 16);
     }
 
     // 1. 初始化鉴权检查
@@ -672,14 +743,20 @@
             </div>
 
             <div class="mt-4 pt-3 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-slate-500">
-              <span class="truncate max-w-[120px]">${escapeHtml(item.author || '')}</span>
-              <div class="flex items-center gap-2 shrink-0">
+              <span class="truncate max-w-[110px]">${escapeHtml(item.author || '')}</span>
+              <div class="flex items-center gap-1.5 shrink-0">
                 ${item.chat_count > 0 ? `
                   <span class="px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-400 text-[10px] font-mono flex items-center gap-1">
                     <i data-lucide="message-square" class="w-3 h-3"></i> ${item.chat_count}
                   </span>
                 ` : ''}
                 <span>${formatTimeAgo(item.created_at)}</span>
+                <button type="button" class="card-edit-btn p-1 rounded hover:bg-slate-800 text-slate-500 hover:text-cyan-400 transition-colors" title="编辑">
+                  <i data-lucide="edit-3" class="w-3.5 h-3.5"></i>
+                </button>
+                <button type="button" class="card-del-btn p-1 rounded hover:bg-slate-800 text-slate-500 hover:text-red-400 transition-colors" title="删除">
+                  <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+                </button>
               </div>
             </div>
           `;
@@ -695,11 +772,32 @@
                 ${escapeHtml(item.title)}
               </h4>
             </div>
-            <div class="flex items-center gap-3 shrink-0 text-[11px] text-slate-500">
+            <div class="flex items-center gap-2 shrink-0 text-[11px] text-slate-500">
               ${item.score > 0 ? `<span class="font-mono text-amber-400 font-bold">${item.score}分</span>` : ''}
               <span>${formatTimeAgo(item.created_at)}</span>
+              <button type="button" class="card-edit-btn p-1 rounded hover:bg-slate-800 text-slate-500 hover:text-cyan-400 transition-colors" title="编辑">
+                <i data-lucide="edit-3" class="w-3.5 h-3.5"></i>
+              </button>
+              <button type="button" class="card-del-btn p-1 rounded hover:bg-slate-800 text-slate-500 hover:text-red-400 transition-colors" title="删除">
+                <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+              </button>
             </div>
           `;
+        }
+
+        const editBtn = card.querySelector('.card-edit-btn');
+        if (editBtn) {
+          editBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            openEditModal(item);
+          });
+        }
+        const delBtn = card.querySelector('.card-del-btn');
+        if (delBtn) {
+          delBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            handleDeleteItem(item);
+          });
         }
 
         // 点击打开抽屉
@@ -775,6 +873,111 @@
         document.getElementById('searchInput').focus();
       }
     });
+
+    // 4.5 条目编辑与删除逻辑
+    let editingItem = null;
+
+    function openEditModal(item) {
+      if (!item) return;
+      editingItem = item;
+      document.getElementById('editTitleInput').value = item.title || '';
+      document.getElementById('editAuthorInput').value = item.author || '';
+      document.getElementById('editUrlInput').value = item.url || '';
+      document.getElementById('editTagsInput').value = (item.tags || []).join(' ');
+      document.getElementById('editScoreInput').value = item.score || 0;
+      document.getElementById('editSummaryInput').value = item.summary || '';
+      document.getElementById('editContentInput').value = item.content || '';
+      document.getElementById('editModal').classList.remove('hidden');
+      lucide.createIcons();
+    }
+
+    function closeEditModal() {
+      document.getElementById('editModal').classList.add('hidden');
+      editingItem = null;
+    }
+
+    document.getElementById('closeEditModalBtn').addEventListener('click', closeEditModal);
+    document.getElementById('cancelEditBtn').addEventListener('click', closeEditModal);
+    document.getElementById('editItemBtn').addEventListener('click', () => {
+      if (state.currentItem) openEditModal(state.currentItem);
+    });
+    document.getElementById('deleteItemBtn').addEventListener('click', () => {
+      if (state.currentItem) handleDeleteItem(state.currentItem);
+    });
+
+    document.getElementById('editForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (!editingItem) return;
+      const saveBtn = document.getElementById('saveEditBtn');
+      saveBtn.disabled = true;
+      saveBtn.textContent = '正在保存...';
+
+      const payload = {
+        app: editingItem.app,
+        raw_id: editingItem.raw_id,
+        title: document.getElementById('editTitleInput').value.trim(),
+        author: document.getElementById('editAuthorInput').value.trim(),
+        url: document.getElementById('editUrlInput').value.trim(),
+        tags: document.getElementById('editTagsInput').value.trim(),
+        score: parseInt(document.getElementById('editScoreInput').value) || 0,
+        summary: document.getElementById('editSummaryInput').value.trim(),
+        content: document.getElementById('editContentInput').value.trim()
+      };
+
+      try {
+        const res = await apiFetch('/api/dashboard/item/update', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (res.code === 0) {
+          // 同步更新当前抽屉视图
+          editingItem.title = payload.title;
+          editingItem.author = payload.author;
+          editingItem.url = payload.url;
+          editingItem.score = payload.score;
+          editingItem.summary = payload.summary;
+          editingItem.content = payload.content;
+          editingItem.tags = payload.tags ? payload.tags.split(/[,，\s]+/).filter(Boolean).map(t => t.startsWith('#') ? t : `#${t}`) : [];
+          if (state.currentItem && state.currentItem.id === editingItem.id) {
+            openItemDetail(editingItem);
+          }
+          closeEditModal();
+          loadStats();
+          loadItems(false);
+        } else {
+          alert('更新失败: ' + (res.error || '未知错误'));
+        }
+      } catch (err) {
+        alert('保存异常: ' + err.message);
+      } finally {
+        saveBtn.disabled = false;
+        saveBtn.textContent = '保存修改';
+      }
+    });
+
+    async function handleDeleteItem(item) {
+      if (!item) return;
+      if (!confirm(`确定要永久删除《${item.title}》吗？此操作不可恢复。`)) return;
+      try {
+        const res = await apiFetch('/api/dashboard/item/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ app: item.app, raw_id: item.raw_id })
+        });
+        if (res.code === 0) {
+          if (state.currentItem && state.currentItem.id === item.id) {
+            closeDrawer();
+          }
+          loadStats();
+          loadItems(false);
+        } else {
+          alert('删除失败: ' + (res.error || '未知错误'));
+        }
+      } catch (err) {
+        alert('删除请求异常: ' + err.message);
+      }
+    }
 
     // 5. 加载历史对话
     async function loadItemChatHistory(app, rawId) {

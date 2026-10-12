@@ -251,7 +251,7 @@ class DashboardService:
                     # 查询对话轮数
                     chat_cnt = 0
                     try:
-                        chat_cnt = conn.execute("SELECT count(*) FROM chat_history WHERE note_id = ?", (r["id"],)).fetchone()[0]
+                        chat_cnt = conn.execute("SELECT count(*) FROM note_chat_history WHERE note_id = ?", (r["id"],)).fetchone()[0]
                     except Exception:
                         pass
 
@@ -533,7 +533,7 @@ class DashboardService:
                 try:
                     with conn:
                         rows = conn.execute(
-                            "SELECT role, content, created_at FROM chat_history WHERE note_id = ? ORDER BY id ASC",
+                            "SELECT role, content, created_at FROM note_chat_history WHERE note_id = ? ORDER BY id ASC",
                             (raw_id,)
                         ).fetchall()
                         chat_history = [{"role": r["role"], "content": r["content"], "created_at": r["created_at"]} for r in rows]
@@ -681,11 +681,11 @@ class DashboardService:
                 try:
                     with conn:
                         conn.execute(
-                            "INSERT INTO chat_history (note_id, role, content, created_at) VALUES (?, ?, ?, ?)",
+                            "INSERT INTO note_chat_history (note_id, from_user, role, content, created_at) VALUES (?, '@web_user', ?, ?, ?)",
                             (raw_id, "user", question, now_str)
                         )
                         conn.execute(
-                            "INSERT INTO chat_history (note_id, role, content, created_at) VALUES (?, ?, ?, ?)",
+                            "INSERT INTO note_chat_history (note_id, from_user, role, content, created_at) VALUES (?, '@web_user', ?, ?, ?)",
                             (raw_id, "assistant", reply_text, now_str)
                         )
                         conn.commit()
@@ -697,3 +697,205 @@ class DashboardService:
             "reply": reply_text,
             "created_at": now_str
         }
+
+    # =========================================================================
+    # 条目编辑与删除 (Update & Delete Item)
+    # =========================================================================
+    def update_item(self, app: str, raw_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        """更新指定应用条目的标题、摘要、正文、标签或评分."""
+        if not app or not raw_id:
+            return {"code": 400, "error": "缺少 app 或 raw_id 参数"}
+
+        title = (data.get("title") or "").strip()
+        author = (data.get("author") or "").strip()
+        url = (data.get("url") or "").strip()
+        summary = (data.get("summary") or "").strip()
+        content = (data.get("content") or "").strip()
+        score = data.get("score")
+        raw_tags = data.get("tags")
+
+        tags_list: List[str] = []
+        if isinstance(raw_tags, list):
+            tags_list = [str(t).strip() for t in raw_tags if str(t).strip()]
+        elif isinstance(raw_tags, str) and raw_tags.strip():
+            import re
+            tags_list = [t.strip() for t in re.split(r'[,，\s]+', raw_tags.strip()) if t.strip()]
+        tags_list = [t if t.startswith("#") else f"#{t}" for t in tags_list]
+
+        try:
+            if app == "notes":
+                conn = self._get_conn("notes")
+                if not conn:
+                    return {"code": 500, "error": "无法连接 notes 数据库"}
+                with conn:
+                    row = conn.execute("SELECT id, title, author, url, tldr, content_markdown, tags FROM inbox_notes WHERE id = ?", (raw_id,)).fetchone()
+                    if not row:
+                        return {"code": 404, "error": f"未找到笔记 #{raw_id}"}
+                    new_title = title if "title" in data else (row["title"] or "")
+                    new_author = author if "author" in data else (row["author"] or "")
+                    new_url = url if "url" in data else (row["url"] or "")
+                    new_tldr = summary if "summary" in data else (row["tldr"] or "")
+                    new_content = content if "content" in data else (row["content_markdown"] or "")
+                    new_tags = json.dumps(tags_list, ensure_ascii=False) if "tags" in data else (row["tags"] or "[]")
+                    conn.execute("""
+                        UPDATE inbox_notes
+                        SET title = ?, author = ?, url = ?, tldr = ?, content_markdown = ?, tags = ?, is_synced = 0
+                        WHERE id = ?
+                    """, (new_title, new_author, new_url, new_tldr, new_content, new_tags, raw_id))
+                    conn.commit()
+                return {"code": 0, "msg": "笔记更新成功"}
+
+            elif app == "insights":
+                conn = self._get_conn("insights")
+                if not conn:
+                    return {"code": 500, "error": "无法连接 insights 数据库"}
+                with conn:
+                    row = conn.execute("SELECT id, title, core_insight, depth_score FROM archived_insights WHERE id = ?", (raw_id,)).fetchone()
+                    if not row:
+                        return {"code": 404, "error": f"未找到洞察 #{raw_id}"}
+                    new_title = title if "title" in data else row["title"]
+                    new_insight = (content or summary) if ("content" in data or "summary" in data) else row["core_insight"]
+                    new_score = int(score) if score is not None else row["depth_score"]
+                    conn.execute("""
+                        UPDATE archived_insights
+                        SET title = ?, core_insight = ?, depth_score = ?
+                        WHERE id = ?
+                    """, (new_title, new_insight, new_score, raw_id))
+                    conn.commit()
+                return {"code": 0, "msg": "洞察更新成功"}
+
+            elif app == "radar":
+                conn = self._get_conn("radar")
+                if not conn:
+                    return {"code": 500, "error": "无法连接 radar 数据库"}
+                with conn:
+                    row = conn.execute("SELECT item_id, title, author, url, core_insight, value_score FROM processed_items WHERE item_id = ?", (raw_id,)).fetchone()
+                    if not row:
+                        return {"code": 404, "error": f"未找到雷达条目 #{raw_id}"}
+                    new_title = title if "title" in data else row["title"]
+                    new_author = author if "author" in data else row["author"]
+                    new_url = url if "url" in data else row["url"]
+                    new_insight = (summary or content) if ("summary" in data or "content" in data) else row["core_insight"]
+                    new_score = int(score) if score is not None else row["value_score"]
+                    conn.execute("""
+                        UPDATE processed_items
+                        SET title = ?, author = ?, url = ?, core_insight = ?, value_score = ?
+                        WHERE item_id = ?
+                    """, (new_title, new_author, new_url, new_insight, new_score, raw_id))
+                    conn.commit()
+                return {"code": 0, "msg": "社交雷达条目更新成功"}
+
+            elif app == "mail":
+                conn = self._get_conn("mail")
+                if not conn:
+                    return {"code": 500, "error": "无法连接 mail 数据库"}
+                with conn:
+                    row = conn.execute("SELECT message_id, subject, sender, summary FROM processed_emails WHERE message_id = ?", (raw_id,)).fetchone()
+                    if not row:
+                        return {"code": 404, "error": f"未找到邮件 #{raw_id}"}
+                    new_subject = title if "title" in data else row["subject"]
+                    new_sender = author if "author" in data else row["sender"]
+                    new_summary = (summary or content) if ("summary" in data or "content" in data) else row["summary"]
+                    conn.execute("""
+                        UPDATE processed_emails
+                        SET subject = ?, sender = ?, summary = ?
+                        WHERE message_id = ?
+                    """, (new_subject, new_sender, new_summary, raw_id))
+                    conn.commit()
+                return {"code": 0, "msg": "邮件条目更新成功"}
+
+            elif app == "papers":
+                conn = self._get_conn("mail")
+                if not conn:
+                    return {"code": 500, "error": "无法连接 papers 数据库"}
+                with conn:
+                    row = conn.execute("SELECT paper_id, title, authors, url, analysis, relevance_score FROM processed_papers WHERE paper_id = ?", (raw_id,)).fetchone()
+                    if not row:
+                        return {"code": 404, "error": f"未找到论文 #{raw_id}"}
+                    new_title = title if "title" in data else row["title"]
+                    new_authors = author if "author" in data else row["authors"]
+                    new_url = url if "url" in data else row["url"]
+                    new_analysis = (content or summary) if ("content" in data or "summary" in data) else row["analysis"]
+                    new_score = int(score) if score is not None else row["relevance_score"]
+                    conn.execute("""
+                        UPDATE processed_papers
+                        SET title = ?, authors = ?, url = ?, analysis = ?, relevance_score = ?
+                        WHERE paper_id = ?
+                    """, (new_title, new_authors, new_url, new_analysis, new_score, raw_id))
+                    conn.commit()
+                return {"code": 0, "msg": "论文条目更新成功"}
+
+            return {"code": 400, "error": f"不支持的应用类型: {app}"}
+        except Exception as e:
+            logger.error(f"[Dashboard] 更新条目失败 ({app}/{raw_id}): {e}")
+            return {"code": 500, "error": str(e)}
+
+    def delete_item(self, app: str, raw_id: str) -> Dict[str, Any]:
+        """删除指定应用的数据条目及其关联对话记录."""
+        if not app or not raw_id:
+            return {"code": 400, "error": "缺少 app 或 raw_id 参数"}
+
+        try:
+            if app == "notes":
+                conn = self._get_conn("notes")
+                if not conn:
+                    return {"code": 500, "error": "无法连接 notes 数据库"}
+                with conn:
+                    conn.execute("DELETE FROM note_chat_history WHERE note_id = ?", (raw_id,))
+                    cur = conn.execute("DELETE FROM inbox_notes WHERE id = ?", (raw_id,))
+                    conn.commit()
+                    if cur.rowcount == 0:
+                        return {"code": 404, "error": f"未找到笔记 #{raw_id}"}
+                return {"code": 0, "msg": "笔记已删除"}
+
+            elif app == "insights":
+                conn = self._get_conn("insights")
+                if not conn:
+                    return {"code": 500, "error": "无法连接 insights 数据库"}
+                with conn:
+                    conn.execute("DELETE FROM insight_chat_history WHERE insight_id = ?", (raw_id,))
+                    cur = conn.execute("DELETE FROM archived_insights WHERE id = ?", (raw_id,))
+                    conn.commit()
+                    if cur.rowcount == 0:
+                        return {"code": 404, "error": f"未找到洞察 #{raw_id}"}
+                return {"code": 0, "msg": "洞察已删除"}
+
+            elif app == "radar":
+                conn = self._get_conn("radar")
+                if not conn:
+                    return {"code": 500, "error": "无法连接 radar 数据库"}
+                with conn:
+                    conn.execute("DELETE FROM radar_chat_history WHERE item_id = ?", (raw_id,))
+                    cur = conn.execute("DELETE FROM processed_items WHERE item_id = ?", (raw_id,))
+                    conn.commit()
+                    if cur.rowcount == 0:
+                        return {"code": 404, "error": f"未找到雷达条目 #{raw_id}"}
+                return {"code": 0, "msg": "社交雷达条目已删除"}
+
+            elif app == "mail":
+                conn = self._get_conn("mail")
+                if not conn:
+                    return {"code": 500, "error": "无法连接 mail 数据库"}
+                with conn:
+                    conn.execute("DELETE FROM email_chat_history WHERE email_id = ?", (raw_id,))
+                    cur = conn.execute("DELETE FROM processed_emails WHERE message_id = ?", (raw_id,))
+                    conn.commit()
+                    if cur.rowcount == 0:
+                        return {"code": 404, "error": f"未找到邮件 #{raw_id}"}
+                return {"code": 0, "msg": "邮件条目已删除"}
+
+            elif app == "papers":
+                conn = self._get_conn("mail")
+                if not conn:
+                    return {"code": 500, "error": "无法连接 papers 数据库"}
+                with conn:
+                    cur = conn.execute("DELETE FROM processed_papers WHERE paper_id = ?", (raw_id,))
+                    conn.commit()
+                    if cur.rowcount == 0:
+                        return {"code": 404, "error": f"未找到论文 #{raw_id}"}
+                return {"code": 0, "msg": "论文条目已删除"}
+
+            return {"code": 400, "error": f"不支持的应用类型: {app}"}
+        except Exception as e:
+            logger.error(f"[Dashboard] 删除条目失败 ({app}/{raw_id}): {e}")
+            return {"code": 500, "error": str(e)}

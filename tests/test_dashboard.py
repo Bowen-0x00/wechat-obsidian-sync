@@ -67,3 +67,56 @@ def test_web_index_html_exists():
     assert "WeHub" in content
     assert "id=\"authModal\"" in content
     assert "id=\"drawerOverlay\"" in content
+    assert "id=\"editModal\"" in content
+    assert "id=\"editItemBtn\"" in content
+    assert "id=\"deleteItemBtn\"" in content
+
+
+def test_dashboard_edit_delete_and_timezone(tmp_path, mock_config):
+    """测试笔记时区本地化修正以及看板的编辑与删除能力."""
+    import sqlite3
+    from storage import InboxStorage
+
+    db_dir = tmp_path / "data"
+    db_dir.mkdir()
+    db_path = str(db_dir / "inbox.db")
+
+    # 1. 创建一条模拟历史 UTC 时间戳的记录 (1791791051 对应北京时间 2026-10-12 15:44:11，UTC 为 07:44:50)
+    storage = InboxStorage(db_path=db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("""
+        INSERT INTO inbox_notes (msg_id, msg_type, from_user, create_time, title, tldr, content_markdown, tags, created_at)
+        VALUES ('utc_msg_1', 'link', 'u1', 1791791051, '旧标题', '旧摘要', '旧正文', '["#旧标签"]', '2026-10-12 07:44:50')
+        """)
+        conn.commit()
+
+    # 重新初始化触发 UTC -> UTC+8 自动修正
+    storage = InboxStorage(db_path=db_path)
+    note = storage.get_note_by_target("last")
+    assert note["created_at"] == "2026-10-12 15:44:50"
+
+    # 2. 验证 DashboardService 的 update_item 与 delete_item
+    srv = DashboardService(mock_config, base_dir=str(tmp_path))
+    srv.db_paths["notes"] = db_path
+
+    nid = str(note["id"])
+    up_res = srv.update_item("notes", nid, {
+        "title": "新修改标题",
+        "author": "新作者",
+        "url": "https://example.com/new",
+        "summary": "更新后的速读",
+        "content": "更新后的完整 Markdown 正文",
+        "tags": "#AI芯片 #体系结构"
+    })
+    assert up_res["code"] == 0
+
+    items = srv.get_items(app="notes")["items"]
+    assert len(items) == 1
+    assert items[0]["title"] == "新修改标题"
+    assert items[0]["summary"] == "更新后的速读"
+    assert items[0]["content"] == "更新后的完整 Markdown 正文"
+    assert "#AI芯片" in items[0]["tags"]
+
+    del_res = srv.delete_item("notes", nid)
+    assert del_res["code"] == 0
+    assert len(srv.get_items(app="notes")["items"]) == 0

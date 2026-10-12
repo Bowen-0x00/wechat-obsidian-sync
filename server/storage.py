@@ -75,6 +75,16 @@ class InboxStorage:
                 pass
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_inbox_synced ON inbox_notes(is_synced)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_inbox_msg_id ON inbox_notes(msg_id)")
+            # 自动修正历史记录中因 SQLite CURRENT_TIMESTAMP (UTC) 导致的 8 小时时差
+            try:
+                cursor.execute("""
+                UPDATE inbox_notes
+                SET created_at = datetime(created_at, '+8 hours')
+                WHERE create_time > 1000000000
+                  AND abs(CAST(strftime('%s', created_at) AS INTEGER) - create_time) < 7200
+                """)
+            except Exception:
+                pass
             conn.commit()
             logger.debug(f"[Storage] 笔记收件箱数据库就绪: {self.db_path}")
 
@@ -109,12 +119,13 @@ class InboxStorage:
         kp_json = json.dumps(key_points or [], ensure_ascii=False)
         tags_json = json.dumps(tags or [], ensure_ascii=False)
         img_json = json.dumps(image_urls or [], ensure_ascii=False)
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with self._get_connection() as conn:
             cur = conn.cursor()
             cur.execute("""
             INSERT OR IGNORE INTO inbox_notes 
-            (msg_id, msg_type, from_user, create_time, raw_content, title, author, url, tldr, key_points, tags, media_filename, content_markdown, image_urls, ocr_text, is_synced)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+            (msg_id, msg_type, from_user, create_time, raw_content, title, author, url, tldr, key_points, tags, media_filename, content_markdown, image_urls, ocr_text, is_synced, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
             """, (
                 msg_id,
                 msg_type,
@@ -130,7 +141,8 @@ class InboxStorage:
                 media_filename,
                 content_markdown,
                 img_json,
-                ocr_text
+                ocr_text,
+                now_str
             ))
             conn.commit()
             last_id = cur.lastrowid
@@ -272,12 +284,13 @@ class InboxStorage:
 
     def add_chat_message(self, note_id: int, from_user: str, role: str, content: str):
         """记录追问对话历史."""
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with self._get_connection() as conn:
             cur = conn.cursor()
             cur.execute("""
-            INSERT INTO note_chat_history (note_id, from_user, role, content)
-            VALUES (?, ?, ?, ?)
-            """, (note_id, from_user, role, content))
+            INSERT INTO note_chat_history (note_id, from_user, role, content, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """, (note_id, from_user, role, content, now_str))
             conn.commit()
 
     def get_chat_history(self, note_id: int, limit: int = 10) -> List[Dict[str, str]]:
