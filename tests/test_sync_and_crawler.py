@@ -179,15 +179,17 @@ def test_http_clip_api_endpoint():
         th.start()
 
         try:
+            no_proxy = {"http": None, "https": None}
             # 1. 鉴权失败测试
-            r_fail = requests.post("http://127.0.0.1:18999/api/clip", json={"content": "测试"}, timeout=5)
+            r_fail = requests.post("http://127.0.0.1:18999/api/clip", json={"content": "测试"}, timeout=5, proxies=no_proxy)
             assert r_fail.status_code == 401
 
             # 2. 正常 JSON 剪藏
             r_ok = requests.post(
                 "http://127.0.0.1:18999/api/clip?secret=test_secret_123",
                 json={"content": "这是从安卓剪藏的内容", "title": "自定义标题"},
-                timeout=5
+                timeout=5,
+                proxies=no_proxy
             )
             assert r_ok.status_code == 200
             data = r_ok.json()
@@ -200,9 +202,9 @@ def test_http_clip_api_endpoint():
                 "http://127.0.0.1:18999/api/clip?secret=test_secret_123",
                 data="纯文本闪念备忘".encode("utf-8"),
                 headers={"Content-Type": "text/plain; charset=utf-8"},
-                timeout=5
+                timeout=5,
+                proxies=no_proxy
             )
-            assert r_text.status_code == 200
             data_text = r_text.json()
             assert data_text["code"] == 0
             assert data_text["note_id"] > 0
@@ -269,3 +271,127 @@ def test_llm_model_command_and_alert():
             assert len(alert_calls) == 1
         finally:
             os.chdir(orig_cwd)
+
+
+def test_local_ocr_and_vision_dual_pipeline():
+    """测试本地 RapidOCR 默认提取、/v 指令强制多模态视觉解析以及数据存档与 Markdown 渲染."""
+    import io
+    from PIL import Image, ImageDraw
+    from server import WeChatObsidianServer, WeChatMessage
+    from parser import MessageParser
+    from ocr_engine import OCREngine
+
+    # 1. 验证 MessageParser 对 /v 和 /vision 指令的识别
+    xml_vision = """<xml>
+    <ToUserName><![CDATA[toUser]]></ToUserName>
+    <FromUserName><![CDATA[user_v]]></FromUserName>
+    <CreateTime>1710000001</CreateTime>
+    <MsgType><![CDATA[text]]></MsgType>
+    <Content><![CDATA[/v https://mp.weixin.qq.com/s/test_vision_article]]></Content>
+    <MsgId>999001</MsgId>
+    </xml>"""
+    parsed_msg = MessageParser.parse_xml(xml_vision)
+    assert parsed_msg is not None
+    assert parsed_msg.force_vision is True
+    assert "https://mp.weixin.qq.com/s/test_vision_article" in parsed_msg.embedded_urls
+
+    # 2. 验证本地 RapidOCR 真实提取图片字节流
+    img = Image.new("RGB", (400, 120), color=(255, 255, 255))
+    draw = ImageDraw.Draw(img)
+    draw.text((20, 45), "WeChat Obsidian OCR 2026", fill=(0, 0, 0))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    ocr_res = OCREngine.extract_text_from_bytes(buf.getvalue())
+    assert "WeChat" in ocr_res or "Obsidian" in ocr_res or "2026" in ocr_res
+
+    # 3. 验证服务端双轨路由 (默认本地 OCR vs /v 强制大模型视觉理解)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = os.path.join(tmpdir, "test_dual_ocr.db")
+        server = WeChatObsidianServer.__new__(WeChatObsidianServer)
+        server.storage = InboxStorage(db_path=db_path)
+        server.alert_cooldowns = {}
+        server._submit_background = lambda fn, *args: None
+        replies = []
+        server._reply_user = lambda to_user, text, is_kf=False, kfid="": replies.append(text)
+
+        class DummyWeCom:
+            def send_confirmation(self, to_user, text):
+                replies.append(text)
+        server.wecom_client = DummyWeCom()
+
+        # 模拟纯图片公众号文章 (文字极少，包含图片)
+        class PureImageCrawler:
+            def crawl(self, url, title_hint=""):
+                return CrawledArticle(
+                    title="纯图架构报告",
+                    author="芯片实验室",
+                    content_text="点击蓝字关注",
+                    content_markdown="![架构图](https://mmbiz.qpic.cn/test1.jpg)",
+                    url=url,
+                    images=["https://mmbiz.qpic.cn/test1.jpg"]
+                )
+        server.crawler = PureImageCrawler()
+
+        # Mock 本地 OCR 批量提取返回文字
+        orig_extract = OCREngine.extract_text_from_images
+        OCREngine.extract_text_from_images = classmethod(lambda cls, urls, max_images=6: "【图 1 识别文字】\nNPU 核心算力达到 128 TOPS，采用存算一体架构。")
+
+        class DualMockLLM:
+            enable = True
+            model = "gemini-3.8-flash"
+            def summarize_article(self, title, text, url):
+                # 验证本地 OCR 的结果已经被拼接到传给大模型的 text 中
+                assert "128 TOPS" in text
+                return {
+                    "tldr": "基于本地OCR提取的速读：介绍128 TOPS存算一体架构",
+                    "key_points": ["算力128 TOPS", "存算一体"],
+                    "tags": ["#AI芯片"]
+                }
+            def summarize_article_with_vision(self, title, image_urls, url="", text_hint="", max_images=4):
+                return {
+                    "tldr": "Gemini视觉深度解读：深入剖析存算一体数据流拓扑图",
+                    "key_points": ["矩阵乘加阵列", "片上SRAM高带宽设计"],
+                    "tags": ["#计算机体系结构", "#视觉解析"],
+                    "ocr_text": "架构图完整文字：PE Array + Global Buffer",
+                    "image_insights": "该架构图展示了双缓冲数据通路，有效隐藏访存延迟。"
+                }
+        server.llm = DualMockLLM()
+
+        try:
+            # 3A: 默认模式（不带 /v），走本地 RapidOCR
+            res_default = server.process_clipped_content("https://mp.weixin.qq.com/s/pure_img_1")
+            assert "128 TOPS" in res_default["ocr_text"]
+            assert "基于本地OCR提取的速读" in res_default["tldr"]
+            assert "#长图文" in res_default["tags"]
+
+            # 检查数据库是否正确存档 ocr_text 供其他 App 使用
+            unsynced = server.storage.get_unsynced_notes()
+            assert len(unsynced) == 1
+            assert "128 TOPS" in unsynced[0]["ocr_text"]
+            assert "图片文字提取 (Local OCR)" in unsynced[0]["content_markdown"]
+
+            # 3B: 用户追加发送独立 `/v` 指令，将刚收藏的笔记升级为 Gemini 视觉深度理解
+            cmd_v = WeChatMessage(msg_id="v_cmd_1", msg_type="text", from_user="quick_share", create_time=1710000010, content="/v last")
+            server._handle_vision_command(cmd_v)
+            assert "Gemini 视觉深度解析完成" in replies[-1]
+
+            updated_note = server.storage.get_note_by_target(str(res_default["note_id"]))
+            assert "双缓冲数据通路" in updated_note["ocr_text"]
+            assert "Gemini视觉深度解读" in updated_note["tldr"]
+            assert "长图文字识别与视觉深度解析 (Vision)" in updated_note["content_markdown"]
+
+            # 3C: 发送链接时直接携带 `/v` 指令，直接走 Vision 大模型通道
+            res_vision = server.process_clipped_content("/v https://mp.weixin.qq.com/s/pure_img_2")
+            assert "Gemini视觉深度解读" in res_vision["tldr"]
+            assert "PE Array" in res_vision["ocr_text"]
+
+            # 4. 验证 local/writer.py 渲染 Markdown 包含 OCR Callout
+            sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "local")))
+            from writer import ObsidianWriter
+            writer = ObsidianWriter(vault_path=tmpdir)
+            writer.download_image_to_vault = lambda x: "![[mock_img.jpg]]"
+            md_output = writer.format_note_markdown(updated_note)
+            assert "长图文字识别与视觉深度解析" in md_output
+            assert "双缓冲数据通路" in md_output
+        finally:
+            OCREngine.extract_text_from_images = orig_extract

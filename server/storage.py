@@ -42,6 +42,7 @@ class InboxStorage:
                 media_filename TEXT,          -- 图片或文件本地文件名
                 content_markdown TEXT,        -- 文章转换后的 Markdown 正文
                 image_urls TEXT,              -- 文章包含的所有图片链接 (JSON 字符串)
+                ocr_text TEXT,                -- 图片/长图提取的文字或视觉深度解析 (OCR)
                 is_synced INTEGER DEFAULT 0,  -- 0: 待同步, 1: 已同步落盘
                 synced_at TIMESTAMP,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -66,6 +67,10 @@ class InboxStorage:
                 pass
             try:
                 cursor.execute("ALTER TABLE inbox_notes ADD COLUMN image_urls TEXT")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                cursor.execute("ALTER TABLE inbox_notes ADD COLUMN ocr_text TEXT")
             except sqlite3.OperationalError:
                 pass
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_inbox_synced ON inbox_notes(is_synced)")
@@ -97,7 +102,8 @@ class InboxStorage:
         tags: Optional[List[str]] = None,
         media_filename: str = "",
         content_markdown: str = "",
-        image_urls: Optional[List[str]] = None
+        image_urls: Optional[List[str]] = None,
+        ocr_text: str = ""
     ) -> int:
         """新增一条笔记到收件箱."""
         kp_json = json.dumps(key_points or [], ensure_ascii=False)
@@ -107,8 +113,8 @@ class InboxStorage:
             cur = conn.cursor()
             cur.execute("""
             INSERT OR IGNORE INTO inbox_notes 
-            (msg_id, msg_type, from_user, create_time, raw_content, title, author, url, tldr, key_points, tags, media_filename, content_markdown, image_urls, is_synced)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+            (msg_id, msg_type, from_user, create_time, raw_content, title, author, url, tldr, key_points, tags, media_filename, content_markdown, image_urls, ocr_text, is_synced)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
             """, (
                 msg_id,
                 msg_type,
@@ -123,7 +129,8 @@ class InboxStorage:
                 tags_json,
                 media_filename,
                 content_markdown,
-                img_json
+                img_json,
+                ocr_text
             ))
             conn.commit()
             last_id = cur.lastrowid
@@ -151,7 +158,7 @@ class InboxStorage:
             params.append(limit)
 
             cur.execute(f"""
-            SELECT id, msg_id, msg_type, from_user, create_time, raw_content, title, author, url, tldr, key_points, tags, media_filename, content_markdown, image_urls, created_at
+            SELECT id, msg_id, msg_type, from_user, create_time, raw_content, title, author, url, tldr, key_points, tags, media_filename, content_markdown, image_urls, ocr_text, created_at
             FROM inbox_notes
             {where_clause}
             ORDER BY id ASC
@@ -177,7 +184,8 @@ class InboxStorage:
                     "media_filename": r["media_filename"] or "",
                     "content_markdown": r["content_markdown"] or "",
                     "image_urls": json.loads(r["image_urls"] or "[]"),
-                    "created_at": r["created_at"]
+                    "created_at": r["created_at"],
+                    "ocr_text": r["ocr_text"] if ("ocr_text" in r.keys() and r["ocr_text"]) else ""
                 })
             return notes
 
@@ -258,7 +266,8 @@ class InboxStorage:
                 "media_filename": row["media_filename"] or "",
                 "content_markdown": row["content_markdown"] or "",
                 "image_urls": json.loads(row["image_urls"] or "[]"),
-                "created_at": row["created_at"]
+                "created_at": row["created_at"],
+                "ocr_text": row["ocr_text"] if ("ocr_text" in row.keys() and row["ocr_text"]) else ""
             }
 
     def add_chat_message(self, note_id: int, from_user: str, role: str, content: str):
@@ -311,3 +320,25 @@ class InboxStorage:
                 cur.execute("UPDATE inbox_notes SET is_synced = 0, synced_at = NULL")
             conn.commit()
             logger.info("[Storage] 已重置笔记同步状态为待同步")
+
+    def update_note_intelligence(
+        self,
+        note_id: int,
+        tldr: str,
+        key_points: List[str],
+        tags: List[str],
+        ocr_text: str,
+        content_markdown: str
+    ):
+        """更新已有笔记的 AI 摘要、标签、OCR/视觉解析结果并标记为待同步."""
+        kp_json = json.dumps(key_points or [], ensure_ascii=False)
+        tags_json = json.dumps(tags or [], ensure_ascii=False)
+        with self._get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+            UPDATE inbox_notes
+            SET tldr = ?, key_points = ?, tags = ?, ocr_text = ?, content_markdown = ?, is_synced = 0
+            WHERE id = ?
+            """, (tldr, kp_json, tags_json, ocr_text, content_markdown, note_id))
+            conn.commit()
+            logger.info(f"[Storage] 笔记 [ID {note_id}] 视觉解析结果已更新并重置同步状态")

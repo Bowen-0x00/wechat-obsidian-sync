@@ -26,11 +26,14 @@ class WeChatMessage:
     event_token: str = ""           # 客服拉取凭据 Token
     open_kfid: str = ""             # 客服 ID
     embedded_urls: List[str] = field(default_factory=list)
+    force_vision: bool = False      # 是否强制启用大模型多模态视觉理解
 class MessageParser:
     """微信 XML 消息解析器."""
 
     # 兼容微信分享带换行、带前缀“http://”或“https://”以及各种中英文符号
     URL_PATTERN = re.compile(r'(https?://[^\s<>"\'\(\)]+)', re.IGNORECASE)
+    VISION_CMD_PATTERN = re.compile(r'(?:^|\s)(/v|/vision|／v|／vision|/看图|/识图|/图文|/img|看图|识图)(?:\s|$)', re.IGNORECASE)
+
     @classmethod
     def parse_xml(cls, xml_text: str) -> Optional[WeChatMessage]:
         try:
@@ -58,6 +61,10 @@ class MessageParser:
             event = get_text("Event")
             event_token = get_text("Token")
             open_kfid = get_text("OpenKfId")
+            force_vision = False
+            if content and cls.VISION_CMD_PATTERN.search(content):
+                force_vision = True
+                logger.info("[Parser] 检测到视觉解析指令 (force_vision=True)")
             # 文本消息特殊处理：如果用户发送的文本中包含链接（如直接粘贴或分享公众号链接）
             embedded_urls = []
             if msg_type == "text" and content:
@@ -85,7 +92,8 @@ class MessageParser:
                 event=event,
                 event_token=event_token,
                 open_kfid=open_kfid,
-                embedded_urls=embedded_urls
+                embedded_urls=embedded_urls,
+                force_vision=force_vision
             )
 
             logger.info(f"[Parser] 解析微信消息成功: 类型={msg_type}, ID={msg_id}")

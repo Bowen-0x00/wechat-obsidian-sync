@@ -179,6 +179,133 @@ class WeChatObsidianServer:
         except Exception as e:
             logger.error(f"[Server] 消息解密/解析失败: {e}")
 
+    def _process_article_intelligence(
+        self,
+        article,
+        title: str,
+        url: str,
+        user_note_text: str = "",
+        force_vision: bool = False
+    ) -> tuple[str, list, list, str, str, str, Optional[str]]:
+        """
+        处理文章正文与双轨智能分析 (本地 RapidOCR 提取 vs 多模态大模型视觉深度解析):
+        返回: (tldr, key_points, tags, ocr_text, content_markdown, content_text, error)
+        """
+        content_markdown = ""
+        content_text = ""
+        ocr_text = ""
+        error = None
+
+        # 1. 基础 Markdown 与正文处理
+        if article.content_markdown and len(article.content_markdown.strip()) > 30:
+            content_markdown = article.content_markdown
+            content_text = article.content_text
+            if user_note_text:
+                content_markdown = f"> [!note] 随附笔记\n> {user_note_text}\n\n" + content_markdown
+        else:
+            fallback_content = user_note_text.strip()
+            content_text = fallback_content or title
+            if fallback_content:
+                content_markdown = f"> [!quote] 摘要内容\n> {fallback_content}\n\n> 🔗 原文链接: [{title}]({url})\n"
+            else:
+                content_markdown = f"> [!info] 收藏链接\n> 🔗 [{title}]({url})\n> *(正文触发站点反爬防护，已自动记录链接与标题)*\n"
+
+        # 2. 判断是否触发强制视觉大模型解析 (force_vision: 用户带指令 /v 或 /vision)
+        if force_vision and getattr(article, "images", None):
+            logger.info(f"[Server] 触发多模态视觉大模型解析 (/v, /vision): 发现 {len(article.images)} 张图片")
+            ai_res = self.llm.summarize_article_with_vision(
+                title=title,
+                image_urls=article.images,
+                url=url,
+                text_hint=user_note_text or content_text,
+                max_images=4
+            )
+            tldr = ai_res.get("tldr", "")
+            key_points = ai_res.get("key_points", [])
+            tags = ai_res.get("tags", ["#长图精读", "#视觉解析"])
+            ocr_raw = ai_res.get("ocr_text", "")
+            img_insights = ai_res.get("image_insights", "")
+            error = ai_res.get("error")
+
+            vision_blocks = []
+            if ocr_raw:
+                vision_blocks.append(f"**【长图文文字提取 (OCR)】**:\n{ocr_raw}")
+            if img_insights:
+                vision_blocks.append(f"**【视觉与图表深度解读】**:\n{img_insights}")
+            if vision_blocks:
+                ocr_text = "\n\n".join(vision_blocks)
+                ocr_callout = "\n\n> [!example]- 🔍 长图文字识别与视觉深度解析 (Vision)\n" + "\n".join([f"> {line}" for line in ocr_text.splitlines()])
+                content_markdown += ocr_callout
+
+            return tldr, key_points, tags, ocr_text, content_markdown, content_text, error
+
+        # 3. 默认模式：检测是否为纯图推文 (正文字数极少且包含图片)，自动执行本地 RapidOCR
+        is_sparse_text = len(content_text.strip()) < 100 or content_text.strip() == title.strip()
+        has_images = bool(getattr(article, "images", None))
+
+        if is_sparse_text and has_images:
+            logger.info(f"[Server] 检测到纯图/长图文章 (正文稀少，图数: {len(article.images)})，启用本地 RapidOCR 提取文字...")
+            try:
+                try:
+                    from .ocr_engine import OCREngine
+                except ImportError:
+                    from ocr_engine import OCREngine
+                ocr_text = OCREngine.extract_text_from_images(article.images, max_images=6)
+                if ocr_text:
+                    logger.info(f"[Server] 本地 RapidOCR 提取成功，文字长度: {len(ocr_text)}")
+                    content_text = f"【长图提取正文】:\n{ocr_text}\n\n{content_text}".strip()
+                    ocr_callout = "\n\n> [!example]- 🔍 图片文字提取 (Local OCR)\n" + "\n".join([f"> {line}" for line in ocr_text.splitlines()])
+                    content_markdown += ocr_callout
+            except Exception as e:
+                logger.warning(f"[Server] 本地 OCR 提取异常: {e}")
+
+        # 4. 常规纯文本大模型生成核心速读与标签
+        ai_res = self.llm.summarize_article(title, content_text, url)
+        tldr = ai_res.get("tldr", "")
+        key_points = ai_res.get("key_points", [])
+        tags = ai_res.get("tags", ["#文章收藏"])
+        if ocr_text and "#长图文" not in tags and "#图片" not in tags:
+            tags.append("#长图文")
+        error = ai_res.get("error")
+
+        return tldr, key_points, tags, ocr_text, content_markdown, content_text, error
+
+    def _extract_image_file_ocr(self, media_filename: str) -> tuple[str, str, list, list]:
+        """对本地已下载的单张微信图片执行本地 OCR 识别并由 LLM 打标/摘要."""
+        ocr_text = ""
+        tldr = ""
+        key_points = []
+        tags = ["#图片"]
+        if not media_filename:
+            return ocr_text, tldr, key_points, tags
+
+        img_path = os.path.join("data/images", media_filename)
+        if os.path.exists(img_path):
+            try:
+                with open(img_path, "rb") as f:
+                    img_bytes = f.read()
+                try:
+                    from .ocr_engine import OCREngine
+                except ImportError:
+                    from ocr_engine import OCREngine
+                ocr_text = OCREngine.extract_text_from_bytes(img_bytes)
+                if ocr_text:
+                    logger.info(f"[Server] 单张图片本地 OCR 成功: {len(ocr_text)} 字符")
+                    if len(ocr_text) > 30:
+                        ai_res = self.llm.summarize_article("图片备忘", ocr_text, "")
+                        tldr = ai_res.get("tldr", "")
+                        key_points = ai_res.get("key_points", [])
+                        tags = ai_res.get("tags", ["#图片"])
+                        if "#图片" not in tags:
+                            tags.append("#图片")
+                    else:
+                        tags = self.llm.tag_thought(ocr_text)
+                        if "#图片" not in tags:
+                            tags.append("#图片")
+            except Exception as e:
+                logger.warning(f"[Server] 单张图片本地 OCR 处理异常: {e}")
+        return ocr_text, tldr, key_points, tags
+
     def _process_message_async(self, msg: WeChatMessage):
         """后台执行正文抓取、LLM 摘要打标与入库."""
         # 1. 微信客服消息事件处理
@@ -206,6 +333,9 @@ class WeChatObsidianServer:
         elif cmd_text.startswith(("/llm", "／llm")):
             self._handle_llm_chat_command(msg)
             return
+        elif not msg.embedded_urls and not msg.url and cmd_text.startswith(("/v", "／v", "/vision", "／vision", "/看图", "/识图")):
+            self._handle_vision_command(msg)
+            return
         title = msg.title
         author = ""
         url = msg.url
@@ -216,7 +346,7 @@ class WeChatObsidianServer:
         media_filename = ""
         content_markdown = ""
         image_urls = []
-
+        ocr_text = ""
         # 1. 链接/文章类型 (或正文包含 URL)
         if msg.msg_type == "link" or msg.url or (msg.msg_type == "text" and msg.embedded_urls):
             target_url = msg.url or (msg.embedded_urls[0] if msg.embedded_urls else "")
@@ -224,7 +354,8 @@ class WeChatObsidianServer:
 
             user_note_text = ""
             if msg.msg_type == "text" and msg.content:
-                user_note_text = re.sub(r'https?://[^\s<>"\'\(\)]+', '', msg.content).strip()
+                clean_note = MessageParser.VISION_CMD_PATTERN.sub(' ', msg.content)
+                user_note_text = re.sub(r'https?://[^\s<>"\'\(\)]+', '', clean_note).strip()
                 user_note_text = re.sub(r'^[\s\-_:：/|]+', '', user_note_text).strip()
                 user_note_text = re.sub(r'[\s\-_:：/|]+$', '', user_note_text).strip()
 
@@ -240,28 +371,16 @@ class WeChatObsidianServer:
             url = article.url or target_url
             image_urls = article.images
 
-            # 内容与摘要回退保障机制
-            if article.content_markdown and len(article.content_markdown.strip()) > 30:
-                content_markdown = article.content_markdown
-                content_text = article.content_text
-                if user_note_text:
-                    content_markdown = f"> [!note] 随附笔记\n> {user_note_text}\n\n" + content_markdown
-            else:
-                # 抓取正文受阻（如反爬拦截），使用卡片摘要或用户附言作为正文
-                fallback_content = msg.content if msg.msg_type == "link" else user_note_text
-                fallback_content = fallback_content.strip()
-                content_text = fallback_content or title
-                if fallback_content:
-                    content_markdown = f"> [!quote] 摘要内容\n> {fallback_content}\n\n> 🔗 原文链接: [{title}]({url})\n"
-                else:
-                    content_markdown = f"> [!info] 收藏链接\n> 🔗 [{title}]({url})\n> *(正文触发站点反爬防护，已自动记录链接与标题)*\n"
-
-            # 调用大模型生成 100 字速读和标签
-            ai_res = self.llm.summarize_article(title, content_text, url)
-            tldr = ai_res.get("tldr", "")
-            key_points = ai_res.get("key_points", [])
-            tags = ai_res.get("tags", ["#文章收藏"])
-
+            author = article.author
+            force_vision = getattr(msg, "force_vision", False)
+            tldr, key_points, tags, ocr_text, content_markdown, content_text, llm_err = self._process_article_intelligence(
+                article=article,
+                title=title,
+                url=url,
+                user_note_text=user_note_text or (msg.content if msg.msg_type == "link" else ""),
+                force_vision=force_vision
+            )
+            ai_res = {"error": llm_err}
             # 故障与反爬告警检测
             if getattr(article, "summary_hint", "") == "[知乎反爬限制]":
                 self._notify_alert(
@@ -299,10 +418,12 @@ class WeChatObsidianServer:
         elif msg.msg_type == "image":
             title = "图片备忘"
             tags = ["#图片"]
-            # 下载微信媒体资源
             if msg.media_id:
                 media_filename = self.wecom_client.download_media(msg.media_id, prefix="wx_img") or ""
-
+                if media_filename:
+                    ocr_text, tldr, key_points, tags = self._extract_image_file_ocr(media_filename)
+                    if ocr_text:
+                        raw_content = f"【图片提取文字】:\n{ocr_text}"
         # 入库存储
         note_id = self.storage.add_note(
             msg_id=msg.msg_id,
@@ -318,7 +439,8 @@ class WeChatObsidianServer:
             tags=tags,
             media_filename=media_filename,
             content_markdown=content_markdown,
-            image_urls=image_urls
+            image_urls=image_urls,
+            ocr_text=ocr_text
         )
         # 发送微信确认
         confirm_text = f"✅ 已成功收录至 Obsidian (ID: {note_id})\n"
@@ -326,6 +448,8 @@ class WeChatObsidianServer:
             confirm_text += f"📄 《{title}》\n"
         if tldr:
             confirm_text += f"💡 核心速读: {tldr}\n"
+        if ocr_text:
+            confirm_text += f"🔍 已提取图片文字 ({len(ocr_text)} 字)\n"
         if tags:
             confirm_text += f"🏷️ 标签: {' '.join(tags)}"
 
@@ -361,7 +485,7 @@ class WeChatObsidianServer:
             content_markdown = ""
             image_urls = []
             media_filename = ""
-
+            ocr_text = ""
             # 文本类型
             if msg_type == "text":
                 raw_content = m.get("text", {}).get("content", "")
@@ -386,8 +510,16 @@ class WeChatObsidianServer:
                 import html
                 content_clean = html.unescape(raw_content)
                 urls = MessageParser.URL_PATTERN.findall(content_clean)
+                if not urls and cmd_raw.startswith(("/v", "／v", "/vision", "／vision", "/看图", "/识图")):
+                    kf_cmd_msg = WeChatMessage(msg_id=msg_id, msg_type="text", from_user=from_user, create_time=send_time, content=raw_content)
+                    self._handle_vision_command(kf_cmd_msg, is_kf=True, kfid=kfid)
+                    continue
                 if urls:
                     url = urls[0]
+                    force_vision = False
+                    if MessageParser.VISION_CMD_PATTERN.search(content_clean):
+                        force_vision = True
+                        content_clean = MessageParser.VISION_CMD_PATTERN.sub(' ', content_clean).strip()
                     user_note_text = re.sub(r'https?://[^\s<>"\'\(\)]+', '', content_clean).strip()
                     user_note_text = re.sub(r'^[\s\-_:：/|]+', '', user_note_text).strip()
                     user_note_text = re.sub(r'[\s\-_:：/|]+$', '', user_note_text).strip()
@@ -400,25 +532,17 @@ class WeChatObsidianServer:
                         except ImportError:
                             from crawler import derive_title_from_url
                         title = derive_title_from_url(url)
+                    author = article.author
                     url = article.url or url
                     image_urls = article.images
 
-                    if article.content_markdown and len(article.content_markdown.strip()) > 30:
-                        content_markdown = article.content_markdown
-                        content_text = article.content_text
-                        if user_note_text:
-                            content_markdown = f"> [!note] 随附笔记\n> {user_note_text}\n\n" + content_markdown
-                    else:
-                        content_text = user_note_text or title
-                        if user_note_text:
-                            content_markdown = f"> [!quote] 随笔记录\n> {user_note_text}\n\n> 🔗 原文链接: [{title}]({url})\n"
-                        else:
-                            content_markdown = f"> [!info] 收藏链接\n> 🔗 [{title}]({url})\n> *(正文触发站点反爬防护，已自动记录链接与标题)*\n"
-
-                    ai_res = self.llm.summarize_article(title, content_text, url)
-                    tldr = ai_res.get("tldr", "")
-                    key_points = ai_res.get("key_points", [])
-                    tags = ai_res.get("tags", ["#文章收藏"])
+                    tldr, key_points, tags, ocr_text, content_markdown, content_text, llm_err = self._process_article_intelligence(
+                        article=article,
+                        title=title,
+                        url=url,
+                        user_note_text=user_note_text,
+                        force_vision=force_vision
+                    )
                 else:
                     title = "闪念随笔"
                     tags = self.llm.tag_thought(raw_content)
@@ -435,21 +559,14 @@ class WeChatObsidianServer:
                 url = article.url or url
                 image_urls = article.images
 
-                if article.content_markdown and len(article.content_markdown.strip()) > 30:
-                    content_markdown = article.content_markdown
-                    content_text = article.content_text
-                else:
-                    content_text = raw_content or title
-                    if raw_content:
-                        content_markdown = f"> [!quote] 微信转发摘要\n> {raw_content}\n\n> 🔗 原文链接: [{title}]({url})\n"
-                    else:
-                        content_markdown = f"> [!info] 收藏链接\n> 🔗 [{title}]({url})\n> *(正文触发站点反爬防护，已自动记录链接与标题)*\n"
-
-                ai_res = self.llm.summarize_article(title, content_text, url)
-                tldr = ai_res.get("tldr", "")
-                key_points = ai_res.get("key_points", [])
-                tags = ai_res.get("tags", ["#文章收藏"])
-
+                tldr, key_points, tags, ocr_text, content_markdown, content_text, llm_err = self._process_article_intelligence(
+                    article=article,
+                    title=title,
+                    url=url,
+                    user_note_text=raw_content,
+                    force_vision=False
+                )
+                ai_res = {"error": llm_err}
                 if getattr(article, "summary_hint", "") == "[知乎反爬限制]":
                     self._notify_alert(
                         alert_key="zhihu_cookie_alert",
@@ -487,6 +604,10 @@ class WeChatObsidianServer:
                 media_id = m.get("image", {}).get("media_id", "")
                 if media_id:
                     media_filename = self.wecom_client.download_media(media_id, prefix="kf_img") or ""
+                    if media_filename:
+                        ocr_text, tldr, key_points, tags = self._extract_image_file_ocr(media_filename)
+                        if ocr_text:
+                            raw_content = f"【图片提取文字】:\n{ocr_text}"
 
             # 入库
             note_id = self.storage.add_note(
@@ -503,7 +624,8 @@ class WeChatObsidianServer:
                 tags=tags,
                 media_filename=media_filename,
                 content_markdown=content_markdown,
-                image_urls=image_urls
+                image_urls=image_urls,
+                ocr_text=ocr_text
             )
 
             # 客服会话内回复确认
@@ -512,6 +634,8 @@ class WeChatObsidianServer:
                 confirm_text += f"📄 《{title}》\n"
             if tldr:
                 confirm_text += f"💡 核心速读: {tldr}\n"
+            if ocr_text:
+                confirm_text += f"🔍 已提取图片文字 ({len(ocr_text)} 字)\n"
             if tags:
                 confirm_text += f"🏷️ 标签: {' '.join(tags)}"
 
@@ -714,16 +838,108 @@ class WeChatObsidianServer:
             f"已热加载凭据（长度: {len(new_cookie)}），后续粘贴知乎链接将自动尝试拉取问答与专栏全文并排版。"
         )
         self._reply_user(msg.from_user, reply_msg, is_kf, kfid)
+    def _handle_vision_command(self, msg: WeChatMessage, is_kf: bool = False, kfid: str = ""):
+        """处理 /v 或 /vision 独立命令: 对已收录的最近一篇或指定 ID 笔记执行多模态视觉深度理解."""
+        parts = re.split(r'\s+', msg.content.strip(), maxsplit=1)
+        target = parts[1].strip() if len(parts) > 1 else "last"
+
+        note = self.storage.get_note_by_target(target, from_user=msg.from_user)
+        if not note:
+            self._reply_user(
+                msg.from_user,
+                "⚠️ 未找到可识别的笔记记录。\n💡 用法：\n1. 直接带链接发送：`/v <公众号链接>`\n2. 转发文章或图片后，直接发送 `/v`（或 `/v <笔记ID>`）对该笔记启动 Gemini 视觉深度解析。",
+                is_kf,
+                kfid
+            )
+            return
+
+        note_id = note["id"]
+        title = note.get("title") or f"笔记 #{note_id}"
+        url = note.get("url") or ""
+        image_urls = list(note.get("image_urls") or [])
+        media_filename = note.get("media_filename") or ""
+
+        if media_filename:
+            local_img = os.path.join("data/images", media_filename)
+            if os.path.exists(local_img) and local_img not in image_urls:
+                image_urls.insert(0, local_img)
+
+        if not image_urls and url:
+            article = self.crawler.crawl(url, title_hint=title)
+            image_urls = article.images
+
+        if not image_urls:
+            self._reply_user(
+                msg.from_user,
+                f"⚠️ 笔记《{title}》(ID: {note_id}) 中未检测到任何图片，无需进行视觉解析。",
+                is_kf,
+                kfid
+            )
+            return
+
+        ai_res = self.llm.summarize_article_with_vision(
+            title=title,
+            image_urls=image_urls,
+            url=url,
+            text_hint=note.get("raw_content", ""),
+            max_images=4
+        )
+        tldr = ai_res.get("tldr", "") or note.get("tldr", "")
+        key_points = ai_res.get("key_points", []) or note.get("key_points", [])
+        tags = ai_res.get("tags", []) or note.get("tags", [])
+        ocr_raw = ai_res.get("ocr_text", "")
+        img_insights = ai_res.get("image_insights", "")
+
+        vision_blocks = []
+        if ocr_raw:
+            vision_blocks.append(f"**【长图文文字提取 (OCR)】**:\n{ocr_raw}")
+        if img_insights:
+            vision_blocks.append(f"**【视觉与图表深度解读】**:\n{img_insights}")
+
+        full_ocr = "\n\n".join(vision_blocks) if vision_blocks else note.get("ocr_text", "")
+        content_md = note.get("content_markdown", "")
+        if full_ocr and "长图文字识别与视觉深度解析" not in content_md:
+            ocr_callout = "\n\n> [!example]- 🔍 长图文字识别与视觉深度解析 (Vision)\n" + "\n".join([f"> {line}" for line in full_ocr.splitlines()])
+            content_md = (content_md + ocr_callout).strip()
+
+        self.storage.update_note_intelligence(
+            note_id=note_id,
+            tldr=tldr,
+            key_points=key_points,
+            tags=tags,
+            ocr_text=full_ocr,
+            content_markdown=content_md
+        )
+
+        reply = [
+            f"👁️ **Gemini 视觉深度解析完成** (ID: {note_id})",
+            f"📄 《{title}》 (已解析 {min(len(image_urls), 4)} 张图)",
+            f"💡 **核心速读**: {tldr}"
+        ]
+        if key_points:
+            kp_str = "\n".join([f"  • {p}" for p in key_points[:3]])
+            reply.append(f"📌 **核心要点**:\n{kp_str}")
+        if img_insights:
+            reply.append(f"🔍 **图表/画面洞察**: {img_insights[:200]}{'...' if len(img_insights) > 200 else ''}")
+        if tags:
+            reply.append(f"🏷️ **标签**: {' '.join(tags)}")
+
+        self._reply_user(msg.from_user, "\n".join(reply), is_kf, kfid)
+
     def process_clipped_content(
         self,
         raw_text: str,
         custom_title: str = "",
         extra_tags: Optional[List[str]] = None,
-        from_user: str = "quick_share"
+        from_user: str = "quick_share",
+        force_vision: bool = False
     ) -> Dict[str, Any]:
         """处理手机快捷指令/系统分享直传的内容，完成爬取、LLM分析与入库."""
         import html
         raw_clean = html.unescape(raw_text.strip())
+        if MessageParser.VISION_CMD_PATTERN.search(raw_clean):
+            force_vision = True
+            raw_clean = MessageParser.VISION_CMD_PATTERN.sub(' ', raw_clean).strip()
         urls = MessageParser.URL_PATTERN.findall(raw_clean)
 
         now_ts = int(time.time())
@@ -738,6 +954,7 @@ class WeChatObsidianServer:
         content_markdown = ""
         image_urls = []
         media_filename = ""
+        ocr_text = ""
         raw_content = raw_clean
 
         if urls:
@@ -757,28 +974,21 @@ class WeChatObsidianServer:
                 except ImportError:
                     from crawler import derive_title_from_url
                 title = derive_title_from_url(url)
+            author = article.author
             url = article.url or url
             image_urls = article.images
 
-            if article.content_markdown and len(article.content_markdown.strip()) > 30:
-                content_markdown = article.content_markdown
-                content_text = article.content_text
-                if user_note_text:
-                    content_markdown = f"> [!note] 随附笔记\n> {user_note_text}\n\n" + content_markdown
-            else:
-                content_text = user_note_text or title
-                if user_note_text:
-                    content_markdown = f"> [!quote] 剪藏摘要\n> {user_note_text}\n\n> 🔗 原文链接: [{title}]({url})\n"
-                else:
-                    content_markdown = f"> [!info] 剪藏链接\n> 🔗 [{title}]({url})\n> *(正文触发站点反爬防护，已自动记录链接与标题)*\n"
-
-            ai_res = self.llm.summarize_article(title, content_text, url)
-            tldr = ai_res.get("tldr", "")
-            key_points = ai_res.get("key_points", [])
-            for t in ai_res.get("tags", ["#剪藏"]):
+            tldr, key_points, ai_tags, ocr_text, content_markdown, content_text, llm_err = self._process_article_intelligence(
+                article=article,
+                title=title,
+                url=url,
+                user_note_text=user_note_text,
+                force_vision=force_vision
+            )
+            ai_res = {"error": llm_err}
+            for t in ai_tags:
                 if t not in tags:
                     tags.append(t)
-
             if getattr(article, "summary_hint", "") == "[知乎反爬限制]":
                 self._notify_alert(
                     alert_key="zhihu_cookie_alert",
@@ -828,7 +1038,8 @@ class WeChatObsidianServer:
             tags=tags,
             media_filename=media_filename,
             content_markdown=content_markdown,
-            image_urls=image_urls
+            image_urls=image_urls,
+            ocr_text=ocr_text
         )
 
         logger.info(f"[Clip API] 快捷剪藏入库成功 [ID: {note_id}]: 《{title}》")
@@ -841,6 +1052,8 @@ class WeChatObsidianServer:
                     notify_text += f"📄 《{title}》\n"
                 if tldr:
                     notify_text += f"💡 核心速读: {tldr}\n"
+                if ocr_text:
+                    notify_text += f"🔍 已提取图片文字 ({len(ocr_text)} 字)\n"
                 if tags:
                     notify_text += f"🏷️ 标签: {' '.join(tags)}"
                 self.wecom_client.send_confirmation("@all", notify_text.strip())
@@ -853,7 +1066,8 @@ class WeChatObsidianServer:
             "note_id": note_id,
             "title": title,
             "tldr": tldr,
-            "tags": tags
+            "tags": tags,
+            "ocr_text": ocr_text
         }
 
 
@@ -869,9 +1083,11 @@ class WeChatObsidianServer:
             "📖 **Obsidian 笔记助手交互手册**\n"
             "━━━━━━━━━━━━━━━━━━\n"
             "🔹 **核心剪藏功能**:\n"
-            "• 直接发送微信文章链接: 自动抓取标题、作者、正文排版并下载图片\n"
+            "• 直接发送微信文章链接: 自动抓取标题、作者、正文排版并下载图片（若为纯图片长图，自动执行本地极速 OCR 提取文字）\n"
+            "• `/v <文章链接>` 或 `/vision <链接>`: 强制调用 Gemini 视觉大模型深度解析复杂图表、架构图与图文内容\n"
+            "• 转发文章/图片后发送 `/v` (或 `/v <ID>`): 对最近一篇或指定 ID 笔记追加执行 Gemini 视觉深度理解\n"
             "• 发送普通文本/闪念: 自动归档并打上精炼标签\n"
-            "• 发送图片: 自动保存原图并关联至 Obsidian 附件\n\n"
+            "• 发送图片: 自动保存原图、本地 OCR 提取图中文字并关联至 Obsidian 附件\n\n"
             "🔹 **AI 深度追问与多轮对话**:\n"
             "• `/llm <问题>`: 对最新收录的一篇笔记/文章发起深度追问\n"
             "• `/llm last <问题>`: 追问最近一篇笔记\n"
@@ -1277,6 +1493,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                 custom_title = ""
                 extra_tags = []
                 from_user = "system_share"
+                force_vision = False
 
                 content_type = self.headers.get("Content-Type", "")
                 if "application/json" in content_type:
@@ -1286,6 +1503,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                         custom_title = (data.get("title") or "").strip()
                         extra_tags = data.get("tags") or []
                         from_user = data.get("from_user") or from_user
+                        force_vision = bool(data.get("force_vision") or data.get("vision"))
                     except Exception:
                         raw_text = post_body.strip()
                 else:
@@ -1302,7 +1520,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                     raw_text=raw_text,
                     custom_title=custom_title,
                     extra_tags=extra_tags,
-                    from_user=from_user
+                    from_user=from_user,
+                    force_vision=force_vision
                 )
 
                 self.send_response(200)

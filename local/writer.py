@@ -116,6 +116,7 @@ class ObsidianWriter:
         media_filename = note.get("media_filename", "")
         content_markdown = note.get("content_markdown", "")
         image_urls = note.get("image_urls", [])
+        ocr_text = note.get("ocr_text", "")
         tags_str = " ".join(tags) if tags else ""
 
         blocks = []
@@ -147,6 +148,11 @@ class ObsidianWriter:
                 if img_link:
                     blocks.append(f"\n{img_link}")
 
+
+            # 若包含图片提取或视觉识别文本，单独渲染折叠 Callout 块 (支持全文检索)
+            if ocr_text and "图片提取" not in content_markdown and "文字识别" not in content_markdown:
+                ocr_lines = "\n".join([f"> {line}" for line in ocr_text.strip().splitlines()])
+                blocks.append(f"\n> [!example]- 🔍 图片提取与识别内容 (OCR / Vision)\n{ocr_lines}")
             # 渲染文章完整正文与图片
             if content_markdown:
                 # 将文章中的外链图片下载到本地并替换为 Obsidian 内部引用 ![[...]]
@@ -165,13 +171,17 @@ class ObsidianWriter:
         elif msg_type == "image":
             blocks.append("#### 🖼️ 图片备忘")
             blocks.append(f"## 📅 {time_str}")
+            if tldr:
+                blocks.append(f"> [!abstract] 💡 核心速读\n> {tldr}")
             if media_filename:
                 img_link = self.download_image_to_vault(media_filename)
                 if img_link:
                     blocks.append(img_link)
+            if ocr_text:
+                ocr_lines = "\n".join([f"> {line}" for line in ocr_text.strip().splitlines()])
+                blocks.append(f"\n> [!example]- 🔍 图片文字识别 (OCR)\n{ocr_lines}")
             if tags_str:
                 blocks.append(tags_str)
-
         # 3. 纯文本闪念/待办
         else:
             blocks.append(f"## 📅 {time_str}")

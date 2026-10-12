@@ -40,16 +40,19 @@ class LLMEnhancer:
         else:
             logger.warning("[LLM] 大模型引擎已停用或未配置 API Key")
 
-    def _call_chat_completions(self, messages: List[Dict[str, str]], response_format: Optional[Dict[str, str]] = None) -> str:
+    def _call_chat_completions(self, messages: List[Dict[str, Any]], response_format: Optional[Dict[str, str]] = None, vision_mode: bool = False) -> str:
         """调用大模型，具备自动多候选模型故障转移与代理连接故障自愈能力."""
-        candidate_models = [self.model, "gemini-3.1-pro-preview", "gemini-3.6-flash", "gemini-3.8-flash", "deepseek-chat"]
+        if vision_mode:
+            candidate_models = [self.model, "gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.1-pro-preview", "gpt-4o", "gpt-4o-mini"]
+            candidate_models = [m for m in candidate_models if m and "deepseek" not in m.lower()]
+        else:
+            candidate_models = [self.model, "gemini-3.1-pro-preview", "gemini-3.6-flash", "gemini-3.8-flash", "deepseek-chat"]
         seen = set()
         ordered_models = []
         for m in candidate_models:
             if m and m not in seen:
                 seen.add(m)
                 ordered_models.append(m)
-
         clients = [self.client]
         if self.direct_client and self.direct_client is not self.client:
             clients.append(self.direct_client)
@@ -169,6 +172,134 @@ class LLMEnhancer:
                 "tags": ["#文章收藏"],
                 "error": str(e)
             }
+
+    def summarize_article_with_vision(
+        self,
+        title: str,
+        image_urls: List[str],
+        url: str = "",
+        text_hint: str = "",
+        max_images: int = 4
+    ) -> Dict[str, Any]:
+        """使用多模态视觉大模型深度解析长图/图片，提取 OCR 文字并结构化解读图表与内容."""
+        if not self.enable:
+            return {
+                "tldr": f"《{title}》纯图片收藏",
+                "key_points": [],
+                "tags": ["#长图精读", "#图片收藏"],
+                "ocr_text": "",
+                "image_insights": "",
+                "error": None
+            }
+
+        # 准备图片 Base64
+        prepared_images: List[str] = []
+        try:
+            try:
+                from .ocr_engine import download_image_bytes
+            except ImportError:
+                from ocr_engine import download_image_bytes
+        except Exception:
+            download_image_bytes = None
+
+        if image_urls:
+            from PIL import Image
+            import os
+            import io
+            import base64
+
+            target_urls = image_urls[:max_images]
+            logger.info(f"[LLM Vision] 开始准备并压缩 {len(target_urls)} 张图片用于视觉分析...")
+            for u in target_urls:
+                data = None
+                if u.startswith(("http://", "https://")) and download_image_bytes:
+                    data = download_image_bytes(u)
+                elif os.path.exists(u):
+                    try:
+                        with open(u, "rb") as f:
+                            data = f.read()
+                    except Exception:
+                        data = None
+                if not data:
+                    continue
+                try:
+                    img = Image.open(io.BytesIO(data))
+                    if img.mode != "RGB":
+                        img = img.convert("RGB")
+                    # 限制最大尺寸至 1600px，兼顾清晰度与上传体积
+                    max_dim = 1600
+                    if max(img.size) > max_dim:
+                        scale = max_dim / max(img.size)
+                        new_size = (int(img.width * scale), int(img.height * scale))
+                        img = img.resize(new_size, Image.Resampling.LANCZOS)
+
+                    buf = io.BytesIO()
+                    img.save(buf, format="JPEG", quality=80)
+                    b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+                    prepared_images.append(f"data:image/jpeg;base64,{b64}")
+                except Exception as e:
+                    logger.warning(f"[LLM Vision] 图片预处理异常: {e}")
+
+        if not prepared_images:
+            logger.info("[LLM Vision] 未能获取可用图片，自动回退到纯文本速读")
+            res = self.summarize_article(title, text_hint or title, url)
+            res["ocr_text"] = ""
+            res["image_insights"] = ""
+            return res
+
+        system_prompt = """你是一位顶尖的多模态知识管理专家（PKM）与科研/技术图文解析大师。
+用户提交了一篇以长图或复杂信息图为主的微信公众号文章图片。
+请全面阅读并深度理解所有图片，完成两项核心任务：
+1. 【文字提取与逻辑排版 (OCR)】：完整且准确地提取图片中的核心正文与关键文字信息，按版面自然段落整理，保留关键数据与逻辑层次。
+2. 【图表与视觉深度解读】：对图片中包含的复杂架构图、流程逻辑、数据折线图/对比图、信息图表等，进行结构化的深度剖析与专业解释。
+
+请严格输出标准 JSON 格式：
+{
+  "tldr": "80~150字的核心速读，精准概括文章与长图传达的核心主旨、技术贡献或事件结论",
+  "key_points": ["核心要点1（结合图文细节）", "核心要点2", "核心要点3"],
+  "tags": ["#标签1", "#标签2"],
+  "ocr_text": "从长图中提取的完整正文文字与排版内容",
+  "image_insights": "对图片中架构图/数据图表/复杂逻辑的专业解读与要点剖析"
+}"""
+
+        user_content: List[Dict[str, Any]] = [
+            {
+                "type": "text",
+                "text": f"文章标题: {title}\n文章链接: {url}\n附随文字/提示:\n{text_hint[:800] if text_hint else '（纯图片文章，无附随正文）'}\n\n请详细阅读理解所附的 {len(prepared_images)} 张图片，按要求输出 OCR 提取全文、深度理解与结构化 JSON："
+            }
+        ]
+        for img_data_uri in prepared_images:
+            user_content.append({
+                "type": "image_url",
+                "image_url": {"url": img_data_uri}
+            })
+
+        try:
+            raw = self._call_chat_completions(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content}
+                ],
+                response_format={"type": "json_object"},
+                vision_mode=True
+            )
+            data = self._parse_json(raw)
+            tags = [t if t.startswith("#") else f"#{t}" for t in data.get("tags", [])]
+            return {
+                "tldr": data.get("tldr", ""),
+                "key_points": data.get("key_points", []),
+                "tags": tags or ["#长图精读", "#视觉解析"],
+                "ocr_text": data.get("ocr_text", ""),
+                "image_insights": data.get("image_insights", ""),
+                "error": None
+            }
+        except Exception as e:
+            logger.error(f"[LLM Vision] 视觉大模型调用异常: {e}")
+            fallback = self.summarize_article(title, text_hint or title, url)
+            fallback["ocr_text"] = ""
+            fallback["image_insights"] = ""
+            fallback["error"] = str(e)
+            return fallback
 
     def tag_thought(self, text: str) -> List[str]:
         """为纯文本闪念、随想或待办生成 1~2 个 Obsidian 标签."""

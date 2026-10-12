@@ -231,7 +231,7 @@ class DashboardService:
         items = []
         try:
             with conn:
-                sql = "SELECT id, msg_id, msg_type, from_user, title, author, url, tldr, key_points, tags, media_filename, content_markdown, is_synced, created_at FROM inbox_notes WHERE 1=1"
+                sql = "SELECT id, msg_id, msg_type, from_user, title, author, url, tldr, key_points, tags, media_filename, content_markdown, is_synced, created_at, ocr_text FROM inbox_notes WHERE 1=1"
                 params = []
                 if cutoff:
                     sql += " AND created_at >= ?"
@@ -273,7 +273,8 @@ class DashboardService:
                         "extra": {
                             "msg_type": r["msg_type"],
                             "is_synced": r["is_synced"],
-                            "media_filename": r["media_filename"]
+                            "media_filename": r["media_filename"],
+                            "ocr_text": r["ocr_text"] if ("ocr_text" in r.keys() and r["ocr_text"]) else ""
                         }
                     })
         except Exception as e:
