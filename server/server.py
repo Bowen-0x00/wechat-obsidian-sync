@@ -185,7 +185,8 @@ class WeChatObsidianServer:
         title: str,
         url: str,
         user_note_text: str = "",
-        force_vision: bool = False
+        force_vision: bool = False,
+        progress_callback=None
     ) -> tuple[str, list, list, str, str, str, Optional[str]]:
         """
         处理文章正文与双轨智能分析 (本地 RapidOCR 提取 vs 多模态大模型视觉深度解析):
@@ -213,6 +214,13 @@ class WeChatObsidianServer:
         # 2. 判断是否触发强制视觉大模型解析 (force_vision: 用户带指令 /v 或 /vision)
         if force_vision and getattr(article, "images", None):
             logger.info(f"[Server] 触发多模态视觉大模型解析 (/v, /vision): 发现 {len(article.images)} 张图片")
+            if progress_callback:
+                try:
+                    progress_callback(
+                        f"⏳ 已收到《{title}》，检测到 {len(article.images)} 张图片，正在调用 Gemini 视觉大模型深度解析画面与文字，请稍候（约 10~15 秒）..."
+                    )
+                except Exception as e:
+                    logger.debug(f"[Server] 发送进度提示忽略: {e}")
             ai_res = self.llm.summarize_article_with_vision(
                 title=title,
                 image_urls=article.images,
@@ -244,21 +252,53 @@ class WeChatObsidianServer:
         has_images = bool(getattr(article, "images", None))
 
         if is_sparse_text and has_images:
-            logger.info(f"[Server] 检测到纯图/长图文章 (正文稀少，图数: {len(article.images)})，启用本地 RapidOCR 提取文字...")
+            logger.info(f"[Server] 检测到纯图/长图文章 (正文稀少，图数: {len(article.images)})，开始提取图片文字...")
+            if progress_callback:
+                try:
+                    progress_callback(
+                        f"⏳ 检测到纯图/长图推文《{title}》（共 {len(article.images)} 张图），正在提取图中文字并生成速读，请稍候..."
+                    )
+                except Exception as e:
+                    logger.debug(f"[Server] 发送进度提示忽略: {e}")
             try:
                 try:
                     from .ocr_engine import OCREngine
                 except ImportError:
                     from ocr_engine import OCREngine
-                ocr_text = OCREngine.extract_text_from_images(article.images, max_images=6)
+                ocr_text = OCREngine.extract_text_from_images(article.images, max_images=3)
                 if ocr_text:
                     logger.info(f"[Server] 本地 RapidOCR 提取成功，文字长度: {len(ocr_text)}")
                     content_text = f"【长图提取正文】:\n{ocr_text}\n\n{content_text}".strip()
                     ocr_callout = "\n\n> [!example]- 🔍 图片文字提取 (Local OCR)\n" + "\n".join([f"> {line}" for line in ocr_text.splitlines()])
                     content_markdown += ocr_callout
+                elif self.llm.enable:
+                    # 若本地 OCR 因低内存保护跳过或未识别出复杂字体，自动无缝切换云端 Gemini 视觉模型处理 (0本地内存开销)
+                    logger.info("[Server] 本地 OCR 未返回结果或触发低内存保护，自动切换云端视觉大模型解析...")
+                    ai_res = self.llm.summarize_article_with_vision(
+                        title=title,
+                        image_urls=article.images,
+                        url=url,
+                        text_hint=user_note_text or content_text,
+                        max_images=3
+                    )
+                    tldr = ai_res.get("tldr", "")
+                    key_points = ai_res.get("key_points", [])
+                    tags = ai_res.get("tags", ["#长图文", "#视觉解析"])
+                    ocr_raw = ai_res.get("ocr_text", "")
+                    img_insights = ai_res.get("image_insights", "")
+                    error = ai_res.get("error")
+                    vision_blocks = []
+                    if ocr_raw:
+                        vision_blocks.append(f"**【长图文文字提取 (OCR)】**:\n{ocr_raw}")
+                    if img_insights:
+                        vision_blocks.append(f"**【视觉与图表深度解读】**:\n{img_insights}")
+                    if vision_blocks:
+                        ocr_text = "\n\n".join(vision_blocks)
+                        ocr_callout = "\n\n> [!example]- 🔍 长图文字识别与视觉深度解析 (Vision)\n" + "\n".join([f"> {line}" for line in ocr_text.splitlines()])
+                        content_markdown += ocr_callout
+                    return tldr, key_points, tags, ocr_text, content_markdown, content_text, error
             except Exception as e:
                 logger.warning(f"[Server] 本地 OCR 提取异常: {e}")
-
         # 4. 常规纯文本大模型生成核心速读与标签
         ai_res = self.llm.summarize_article(title, content_text, url)
         tldr = ai_res.get("tldr", "")
@@ -378,7 +418,8 @@ class WeChatObsidianServer:
                 title=title,
                 url=url,
                 user_note_text=user_note_text or (msg.content if msg.msg_type == "link" else ""),
-                force_vision=force_vision
+                force_vision=force_vision,
+                progress_callback=lambda txt: self.wecom_client.send_confirmation(msg.from_user, txt)
             )
             ai_res = {"error": llm_err}
             # 故障与反爬告警检测
@@ -419,6 +460,10 @@ class WeChatObsidianServer:
             title = "图片备忘"
             tags = ["#图片"]
             if msg.media_id:
+                try:
+                    self.wecom_client.send_confirmation(msg.from_user, "⏳ 已收到图片，正在提取图中文字并归档至 Obsidian，请稍候...")
+                except Exception:
+                    pass
                 media_filename = self.wecom_client.download_media(msg.media_id, prefix="wx_img") or ""
                 if media_filename:
                     ocr_text, tldr, key_points, tags = self._extract_image_file_ocr(media_filename)
@@ -541,7 +586,8 @@ class WeChatObsidianServer:
                         title=title,
                         url=url,
                         user_note_text=user_note_text,
-                        force_vision=force_vision
+                        force_vision=force_vision,
+                        progress_callback=lambda txt: self.wecom_client.send_kf_reply(from_user, kfid, txt)
                     )
                 else:
                     title = "闪念随笔"
@@ -564,7 +610,8 @@ class WeChatObsidianServer:
                     title=title,
                     url=url,
                     user_note_text=raw_content,
-                    force_vision=False
+                    force_vision=False,
+                    progress_callback=lambda txt: self.wecom_client.send_kf_reply(from_user, kfid, txt)
                 )
                 ai_res = {"error": llm_err}
                 if getattr(article, "summary_hint", "") == "[知乎反爬限制]":
@@ -603,6 +650,10 @@ class WeChatObsidianServer:
                 tags = ["#图片"]
                 media_id = m.get("image", {}).get("media_id", "")
                 if media_id:
+                    try:
+                        self.wecom_client.send_kf_reply(from_user, kfid, "⏳ 已收到图片，正在提取图中文字并归档至 Obsidian，请稍候...")
+                    except Exception:
+                        pass
                     media_filename = self.wecom_client.download_media(media_id, prefix="kf_img") or ""
                     if media_filename:
                         ocr_text, tldr, key_points, tags = self._extract_image_file_ocr(media_filename)
@@ -876,6 +927,13 @@ class WeChatObsidianServer:
                 kfid
             )
             return
+
+        self._reply_user(
+            msg.from_user,
+            f"⏳ 已收到视觉解析指令，正在调用 Gemini 视觉大模型深度解读《{title}》（共 {min(len(image_urls), 4)} 张图），请稍候（约 10~15 秒）...",
+            is_kf,
+            kfid
+        )
 
         ai_res = self.llm.summarize_article_with_vision(
             title=title,

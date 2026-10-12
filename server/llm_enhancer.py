@@ -226,17 +226,31 @@ class LLMEnhancer:
                     img = Image.open(io.BytesIO(data))
                     if img.mode != "RGB":
                         img = img.convert("RGB")
-                    # 限制最大尺寸至 1600px，兼顾清晰度与上传体积
-                    max_dim = 1600
-                    if max(img.size) > max_dim:
-                        scale = max_dim / max(img.size)
-                        new_size = (int(img.width * scale), int(img.height * scale))
-                        img = img.resize(new_size, Image.Resampling.LANCZOS)
-
-                    buf = io.BytesIO()
-                    img.save(buf, format="JPEG", quality=80)
-                    b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-                    prepared_images.append(f"data:image/jpeg;base64,{b64}")
+                    # 限制宽度不超过 1280px
+                    if img.width > 1280:
+                        scale = 1280 / img.width
+                        img = img.resize((1280, max(1, int(img.height * scale))), Image.Resampling.BILINEAR)
+                    # 若为超长图 (高度超过宽度 3 倍)，按 2000px 高度切片以保证文字清晰可读
+                    slice_h = 2000
+                    if img.height > slice_h * 1.3:
+                        for s_idx in range(2):
+                            if len(prepared_images) >= max_images:
+                                break
+                            top = s_idx * slice_h
+                            if top >= img.height:
+                                break
+                            crop = img.crop((0, top, img.width, min(img.height, top + slice_h)))
+                            buf = io.BytesIO()
+                            crop.save(buf, format="JPEG", quality=80)
+                            b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+                            prepared_images.append(f"data:image/jpeg;base64,{b64}")
+                    else:
+                        buf = io.BytesIO()
+                        img.save(buf, format="JPEG", quality=80)
+                        b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+                        prepared_images.append(f"data:image/jpeg;base64,{b64}")
+                    if len(prepared_images) >= max_images:
+                        break
                 except Exception as e:
                     logger.warning(f"[LLM Vision] 图片预处理异常: {e}")
 

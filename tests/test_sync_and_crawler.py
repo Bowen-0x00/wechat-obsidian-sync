@@ -373,6 +373,7 @@ def test_local_ocr_and_vision_dual_pipeline():
             # 3B: 用户追加发送独立 `/v` 指令，将刚收藏的笔记升级为 Gemini 视觉深度理解
             cmd_v = WeChatMessage(msg_id="v_cmd_1", msg_type="text", from_user="quick_share", create_time=1710000010, content="/v last")
             server._handle_vision_command(cmd_v)
+            assert "正在调用 Gemini 视觉大模型" in replies[-2]
             assert "Gemini 视觉深度解析完成" in replies[-1]
 
             updated_note = server.storage.get_note_by_target(str(res_default["note_id"]))

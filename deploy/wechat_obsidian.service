@@ -10,6 +10,9 @@ ExecStart=/root/mail_assist/venv/bin/python -m server.server
 Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
+Environment=OMP_NUM_THREADS=1
+MemoryMax=500M
+CPUQuota=80%
 
 [Install]
 WantedBy=multi-user.target
