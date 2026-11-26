@@ -8,9 +8,10 @@ import time
 import mimetypes
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse, parse_qs
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import HTTPServer, ThreadingHTTPServer, BaseHTTPRequestHandler
 from typing import Optional, List, Dict, Any
 from loguru import logger
+import requests
 
 try:
     from .wxcrypt import WXBizMsgCrypt
@@ -20,6 +21,7 @@ try:
     from .storage import InboxStorage
     from .wechat_client import WeComClient
     from .dashboard_service import DashboardService
+    from .app_settings import AppSettingsManager
 except ImportError:
     from wxcrypt import WXBizMsgCrypt
     from parser import MessageParser, WeChatMessage
@@ -28,6 +30,7 @@ except ImportError:
     from storage import InboxStorage
     from wechat_client import WeComClient
     from dashboard_service import DashboardService
+    from app_settings import AppSettingsManager
 
 
 class WeChatObsidianServer:
@@ -68,13 +71,18 @@ class WeChatObsidianServer:
                 "name": "洞察引擎 (1000005)",
                 "port": 8086,
                 "crypt": WXBizMsgCrypt("Bfj3VGVeKysV5Q9koJg6TUs9MFwj", "IVxJFR8Ae4jhJmwmcmA0AJm8O2mIgEsYTqoSUGBeShX", self.corp_id)
+            },
+            {
+                "name": "omp 远程助手 (1000006)",
+                "port": 8089,
+                "crypt": WXBizMsgCrypt("wjTKTLYst34", "4FY2YRauFxVgNpWG9847LejGg4zxRqzXGLtL67loON8", self.corp_id)
             }
         ]
         lc = self.cfg.get("llm", {})
         self.llm = LLMEnhancer(
             base_url=lc.get("base_url", ""),
             api_key=lc.get("api_key", ""),
-            model=lc.get("model", "deepseek-chat"),
+            model=lc.get("model", "default"),
             temperature=float(lc.get("temperature", 0.3)),
             enable=bool(lc.get("enable", True)),
             proxy=lc.get("proxy")
@@ -123,7 +131,10 @@ class WeChatObsidianServer:
         self.executor = ThreadPoolExecutor(max_workers=8)
 
         # 初始化统一多应用数据看板服务管理器
-        self.dashboard = DashboardService(self.cfg)
+        self.dashboard = DashboardService(self.cfg, llm=self.llm)
+        self.app_settings = AppSettingsManager(
+            base_dir=os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        )
 
     def _submit_background(self, func, *args):
         """提交后台任务，并确保线程内异常不会被 Future 静默吞掉."""
@@ -779,6 +790,10 @@ class WeChatObsidianServer:
         if not model_arg or model_arg.lower() in ("status", "check", "list", "状态"):
             ok, cost_or_err = self.llm.test_model(self.llm.model)
             status_badge = f"🟢 连通正常 (响应耗时: {cost_or_err})" if ok else f"🔴 异常 ({cost_or_err})"
+            try:
+                model_list = "\n".join(f"• `{name}`" for name in self.llm.available_models())
+            except Exception:
+                model_list = "模型目录暂不可用"
 
             reply = (
                 "🤖 **大模型引擎 (LLM) 状态看板**\n"
@@ -786,14 +801,10 @@ class WeChatObsidianServer:
                 f"📌 当前主模型: `{self.llm.model}`\n"
                 f"⚡ 实时连通性: {status_badge}\n"
                 f"🌐 接口地址: `{self.llm.base_url}`\n\n"
-                "📋 **常用候选模型**:\n"
-                "• `gemini-3.1-pro-preview` (推荐：稳定、速度快)\n"
-                "• `gemini-3.6-flash`\n"
-                "• `gemini-3.8-flash`\n"
-                "• `deepseek-chat`\n\n"
+                f"📋 **账号模型目录**:\n{model_list}\n\n"
                 "💡 **切换模型命令**:\n"
                 "发送：`/llm model <模型名称>`\n"
-                "例如：`/llm model gemini-3.1-pro-preview`"
+                "例如：`/llm model gemini-3.8-flash`"
             )
             self._reply_user(msg.from_user, reply, is_kf, kfid)
             return
@@ -1161,7 +1172,7 @@ class WeChatObsidianServer:
             "• `/llm <时间> <问题>`: 按日期追问 (如 `/llm 20260920 ...`)\n"
             "• `/llm history`: 查看当前选中笔记的概况与已有追问历史\n"
             "• `/llm model`: 查看大模型连接状态与推荐模型列表\n"
-            "• `/llm model <模型名称>`: 切换当前大模型 (如 `/llm model gemini-3.1-pro-preview`)\n\n"
+            "• `/llm model <模型名称>`: 切换当前大模型 (如 `/llm model gemini-3.8-flash`)\n\n"
             "🔹 **系统状态**:\n"
             "• `/cookie <Cookie内容>`: 更新知乎抓取凭据，开启知乎全文与问答解析\n"
             "• `/status` 或 `状态`: 检查笔记收件箱状态、已入库数量与同步情况"
@@ -1237,9 +1248,116 @@ class RequestHandler(BaseHTTPRequestHandler):
             return self.server_instance.dashboard.verify_auth(secret_param or auth_header)
         return False
 
+    def _serve_model_settings(self, action: str = ""):
+        """仅转发已鉴权的管理请求；上游密钥始终留在本机网关。"""
+        status, result = 200, {}
+        try:
+            token = self.headers.get("Authorization", "")
+            if not token.startswith("Bearer ") or not self.server_instance.dashboard.verify_auth(token):
+                status, result = 401, {"code": 401, "error": "请先登录工作台"}
+            elif self.headers.get("Origin") and urlparse(self.headers["Origin"]).netloc != self.headers.get("Host"):
+                status, result = 403, {"code": 403, "error": "配置请求必须来自当前工作台"}
+            else:
+                key = os.environ.get("LLM_GATEWAY_KEY")
+                if not key:
+                    raise RuntimeError("模型网关管理凭据未配置")
+                payload = None
+                if action:
+                    if self.headers.get_content_type() != "application/json":
+                        raise ValueError("请使用 JSON 提交配置")
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if not 0 < length <= 16384:
+                        raise ValueError("配置请求大小必须在 1–16384 字节之间")
+                    payload = json.loads(self.rfile.read(length))
+                    if not isinstance(payload, dict):
+                        raise ValueError("配置必须是 JSON 对象")
+                with requests.Session() as session:
+                    session.trust_env = False
+                    response = session.request(
+                        "POST" if action else "GET",
+                        "http://127.0.0.1:18890/settings" + ("/" + action if action else ""),
+                        json=payload, headers={"Authorization": "Bearer " + key},
+                        timeout=100, allow_redirects=False,
+                    )
+                status = response.status_code
+                result = response.json()
+                if not isinstance(result, dict):
+                    raise RuntimeError("模型网关返回了无效响应")
+        except (ValueError, json.JSONDecodeError):
+            status, result = 400, {"code": 400, "error": "配置格式无效，请检查输入和请求大小"}
+        except Exception:
+            status, result = 502, {"code": 502, "error": "模型配置服务暂不可用，请稍后重试"}
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(json.dumps(result, ensure_ascii=False).encode("utf-8"))
+
+    def _serve_app_settings(self, action: str = ""):
+        """已鉴权的多应用参数、知乎凭据与研究画像配置接口（密钥永不回传）."""
+        status, result = 200, {}
+        try:
+            token = self.headers.get("Authorization", "")
+            if not token.startswith("Bearer ") or not self.server_instance.dashboard.verify_auth(token):
+                status, result = 401, {"code": 401, "error": "请先登录工作台"}
+            elif self.headers.get("Origin") and urlparse(self.headers["Origin"]).netloc != self.headers.get("Host"):
+                status, result = 403, {"code": 403, "error": "配置请求必须来自当前工作台"}
+            else:
+                manager = getattr(self.server_instance, "app_settings", None)
+                if manager is None:
+                    raise RuntimeError("应用配置管理器未初始化")
+                payload = None
+                if action:
+                    if self.headers.get_content_type() != "application/json":
+                        raise ValueError("请使用 JSON 提交配置")
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if not 0 < length <= 131072:
+                        raise ValueError("配置请求大小必须在 1–131072 字节之间")
+                    payload = json.loads(self.rfile.read(length))
+                    if not isinstance(payload, dict):
+                        raise ValueError("配置必须是 JSON 对象")
+                if not action:
+                    result = {"code": 0, **manager.get_all()}
+                elif action == "apps":
+                    result = manager.save_apps(payload, server_instance=self.server_instance)
+                elif action == "profiles":
+                    result = manager.save_profiles(payload)
+                elif action == "action":
+                    result = manager.run_action(payload, server_instance=self.server_instance)
+                else:
+                    raise ValueError(f"未知配置操作: {action}")
+        except (ValueError, json.JSONDecodeError) as exc:
+            status, result = 400, {"code": 400, "error": str(exc) or "配置格式无效"}
+        except Exception as exc:
+            logger.error(f"[AppSettings] 处理请求失败 ({action or 'get'}): {exc}")
+            status, result = 502, {"code": 502, "error": "应用配置服务暂不可用，请稍后重试"}
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        self.wfile.write(json.dumps(result, ensure_ascii=False).encode("utf-8"))
+
     def do_GET(self):
         parsed = urlparse(self.path)
         params = parse_qs(parsed.query)
+        if parsed.path == "/api/dashboard/model-settings":
+            self._serve_model_settings()
+            return
+        if parsed.path == "/api/dashboard/app-settings":
+            self._serve_app_settings()
+            return
+        if parsed.path in ("/model-settings.js", "/model-settings.css"):
+            asset = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web", parsed.path[1:])
+            self.send_response(200)
+            self.send_header("Content-Type", "text/javascript; charset=utf-8" if parsed.path.endswith(".js") else "text/css; charset=utf-8")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            with open(asset, "rb") as stream:
+                self.wfile.write(stream.read())
+            return
 
         # 0. 统一数据看板单页应用: GET / 或 GET /dashboard 或 GET /index.html
         if parsed.path in ("/", "/dashboard", "/dashboard/", "/index.html"):
@@ -1391,6 +1509,26 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 return
 
+        # 4. omp 远程助手 API 代理: GET /api/guard/...
+        if parsed.path.startswith("/api/guard/"):
+            try:
+                subpath = parsed.path[len("/api/guard"):]
+                target = f"http://127.0.0.1:8089{subpath}"
+                if parsed.query:
+                    target += f"?{parsed.query}"
+                resp = requests.get(target, headers=dict(self.headers), timeout=10)
+                self.send_response(resp.status_code)
+                for k, v in resp.headers.items():
+                    if k.lower() not in ("transfer-encoding", "content-length", "content-encoding"):
+                        self.send_header(k, v)
+                self.end_headers()
+                self.wfile.write(resp.content)
+            except Exception as e:
+                self.send_response(502)
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": f"Proxy to omp_guard error: {e}"}).encode())
+            return
+
         # 默认返回服务运行状态
         self.send_response(200)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
@@ -1405,7 +1543,8 @@ class RequestHandler(BaseHTTPRequestHandler):
             try:
                 import requests
                 logger.info(f"[Gateway] 转发微信指令至 [{app_name}] -> {target_url}: {msg.content}")
-                res = requests.post(target_url, json={"command": msg.content, "from_user": msg.from_user}, timeout=10)
+                timeout = 260 if urlparse(target_url).port in (8086, 8087) else 55
+                res = requests.post(target_url, json={"command": msg.content, "from_user": msg.from_user}, timeout=timeout)
                 logger.info(f"[Gateway] [{app_name}] 指令响应状态: {res.status_code}")
             except Exception as e:
                 logger.error(f"[Gateway] 转发至 [{app_name}] 异常: {e}")
@@ -1414,6 +1553,22 @@ class RequestHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
         params = parse_qs(parsed.query)
+        settings_actions = {
+            "/api/dashboard/model-settings/models": "models",
+            "/api/dashboard/model-settings/test": "test",
+            "/api/dashboard/model-settings/save": "save",
+        }
+        if parsed.path in settings_actions:
+            self._serve_model_settings(settings_actions[parsed.path])
+            return
+        app_settings_actions = {
+            "/api/dashboard/app-settings/apps": "apps",
+            "/api/dashboard/app-settings/profiles": "profiles",
+            "/api/dashboard/app-settings/action": "action",
+        }
+        if parsed.path in app_settings_actions:
+            self._serve_app_settings(app_settings_actions[parsed.path])
+            return
         content_len = int(self.headers.get("Content-Length", 0))
         post_body = self.rfile.read(content_len).decode("utf-8", errors="replace")
 
@@ -1565,6 +1720,8 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self._forward_command("http://127.0.0.1:8085/command", "社交雷达", msg)
             elif agent_id == "1000005" or (matched_cand and matched_cand.get("port") == 8086):
                 self._forward_command("http://127.0.0.1:8086/command", "洞察引擎", msg)
+            elif agent_id == "1000006" or (matched_cand and matched_cand.get("port") == 8089):
+                self._forward_command("http://127.0.0.1:8089/command", "omp 远程助手", msg)
             else:
                 # 提交给 Obsidian 笔记助手异步入库处理
                 if msg:
@@ -1658,6 +1815,26 @@ class RequestHandler(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps({"code": 500, "error": str(e)}).encode())
                 return
 
+        # 4. omp 远程助手 API 代理: POST /api/guard/...
+        if parsed.path.startswith("/api/guard/"):
+            try:
+                subpath = parsed.path[len("/api/guard"):]
+                target = f"http://127.0.0.1:8089{subpath}"
+                if parsed.query:
+                    target += f"?{parsed.query}"
+                resp = requests.post(target, data=post_body.encode("utf-8"), headers=dict(self.headers), timeout=10)
+                self.send_response(resp.status_code)
+                for k, v in resp.headers.items():
+                    if k.lower() not in ("transfer-encoding", "content-length", "content-encoding"):
+                        self.send_header(k, v)
+                self.end_headers()
+                self.wfile.write(resp.content)
+            except Exception as e:
+                self.send_response(502)
+                self.end_headers()
+                self.wfile.write(json.dumps({"error": f"Proxy to omp_guard error: {e}"}).encode())
+            return
+
         self.send_response(404)
         self.end_headers()
 
@@ -1669,7 +1846,7 @@ class RequestHandler(BaseHTTPRequestHandler):
 def run_server():
     server = WeChatObsidianServer("config.yaml")
     RequestHandler.server_instance = server
-    httpd = HTTPServer(("0.0.0.0", server.port), RequestHandler)
+    httpd = ThreadingHTTPServer(("0.0.0.0", server.port), RequestHandler)
     logger.info(f"==================================================")
     logger.info(f"微信回调 URL: /wechat")
     logger.info(f"同步 API 接口: /api/sync")

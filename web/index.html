@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>WeHub · 个人全域智能工作台</title>
+  <link rel="stylesheet" href="/model-settings.css?v=3">
   <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
   <!-- Lucide Icons CDN -->
@@ -70,7 +71,7 @@
         <div>
           <div class="flex items-center gap-2">
             <span class="font-bold text-lg tracking-tight bg-gradient-to-r from-slate-100 via-slate-200 to-cyan-400 bg-clip-text text-transparent">WeHub</span>
-            <span class="text-xs font-medium px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">智能工作台</span>
+            <span class="hidden sm:inline text-xs font-medium px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">智能工作台</span>
           </div>
           <div class="flex items-center gap-1.5 text-[11px] text-slate-400">
             <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
@@ -95,6 +96,7 @@
 
       <!-- Right Actions -->
       <div class="flex items-center gap-2">
+        <button id="modelSettingsBtn" type="button" aria-label="系统、模型与提示词设置" aria-haspopup="dialog" title="系统、模型与提示词设置"><i data-lucide="sliders-horizontal" aria-hidden="true"></i><span class="ms-nav-label">系统设置</span></button>
         <button id="refreshBtn" title="刷新数据" class="p-2 rounded-xl bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-300 hover:text-cyan-400 transition-colors">
           <i data-lucide="rotate-cw" class="w-4 h-4"></i>
         </button>
@@ -1168,5 +1170,6 @@
     // 页面入口
     window.addEventListener('DOMContentLoaded', checkAuth);
   </script>
+  <script src="/model-settings.js?v=3"></script>
 </body>
 </html>

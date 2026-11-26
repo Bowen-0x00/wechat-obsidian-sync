@@ -1,6 +1,7 @@
 [Unit]
 Description=WeChat Obsidian Assistant Server
-After=network.target
+After=network.target wehub_llm.service
+Wants=wehub_llm.service
 
 [Service]
 Type=simple
@@ -10,6 +11,7 @@ ExecStart=/root/mail_assist/venv/bin/python -m server.server
 Restart=always
 RestartSec=5
 Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/root/wechat_obsidian/data/llm-gateway.env
 Environment=OMP_NUM_THREADS=1
 MemoryMax=500M
 CPUQuota=80%

@@ -9,14 +9,14 @@ wechat:
   encoding_aes_key: "YOUR_ENCODING_AES_KEY"
   open_kfid: "YOUR_OPEN_KFID"             # 微信客服账号 ID (可选)
 
-# 2. 大语言模型配置 (用于网页长文章 100 字核心速读与智能打标签)
+# 2. 实时大模型请求：本机共享网关，OAuth 凭据不放在业务配置中
 llm:
   enable: true
-  base_url: "https://api.deepseek.com/v1" # 兼容 OpenAI 格式 API 地址
-  api_key: "YOUR_LLM_API_KEY"             # 请填入您的大模型 API Key
-  model: "deepseek-chat"                  # 模型名称
+  base_url: "http://127.0.0.1:18890/v1"
+  api_key: ""                              # 从 LLM_GATEWAY_KEY 环境变量读取
+  model: "default"                          # 跟随网页「模型设置」中的全局默认模型
   temperature: 0.2
-  proxy: null                             # 访问海外大模型接口时的本地代理，国内接口填 null
+  proxy: null                              # 网关负责 Google 出口代理
 
 
 # 3. 知乎平台抓取增强配置 (可选)

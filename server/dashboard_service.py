@@ -22,8 +22,9 @@ from loguru import logger
 class DashboardService:
     """看板数据与会话管理器."""
 
-    def __init__(self, config: Dict[str, Any], base_dir: Optional[str] = None):
+    def __init__(self, config: Dict[str, Any], base_dir: Optional[str] = None, llm=None):
         self.config = config
+        self.llm = llm
         self.base_dir = base_dir or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         
         # 1. 鉴权 Secret 配置
@@ -604,7 +605,7 @@ class DashboardService:
                 res = requests.post(
                     "http://127.0.0.1:8086/command",
                     json={"command": f"/llm {raw_id} {question}", "from_user": "@web_user"},
-                    timeout=45
+                    timeout=260
                 )
                 if res.status_code == 200:
                     data = res.json()
@@ -620,7 +621,7 @@ class DashboardService:
                 res = requests.post(
                     "http://127.0.0.1:8085/command",
                     json={"command": f"/llm {raw_id} {question}", "from_user": "@web_user"},
-                    timeout=45
+                    timeout=55
                 )
                 if res.status_code == 200:
                     data = res.json()
@@ -636,7 +637,7 @@ class DashboardService:
                 res = requests.post(
                     "http://127.0.0.1:8087/command",
                     json={"command": f"/llm {raw_id} {question}", "from_user": "@web_user"},
-                    timeout=45
+                    timeout=260 if app == "papers" else 55
                 )
                 if res.status_code == 200:
                     data = res.json()
@@ -646,7 +647,7 @@ class DashboardService:
             except Exception as e:
                 reply_text = f"[WARN] 连接邮件助手服务失败: {e}"
 
-        # 4. 微信笔记 (本服务原生 LLM 或 模拟生成)
+        # 4. 微信笔记始终复用本服务的实时直接请求引擎。
         elif app == "notes":
             conn = self._get_conn("notes")
             note_row = None
@@ -657,24 +658,19 @@ class DashboardService:
             if not note_row:
                 return {"code": 404, "error": f"未找到 ID 为 {raw_id} 的笔记"}
 
-            title = note_row["title"] or f"笔记 #{raw_id}"
-            content = note_row["content_markdown"] or note_row["tldr"] or note_row["raw_content"] or ""
-
-            # 优先复用 insight_extractor 或 direct LLM
-            prompt = f"你是博文的个人知识助手。请基于笔记内容回答用户的问题。\n\n【笔记标题】: {title}\n【笔记全文】:\n{content}\n\n用户问题: {question}"
-            # 委托给 8086 做通用 LLM 生成
-            try:
-                res = requests.post(
-                    "http://127.0.0.1:8086/command",
-                    json={"command": f"/llm 74 [追问笔记《{title}》]: {question}", "from_user": "@web_user"},
-                    timeout=45
-                )
-                if res.status_code == 200:
-                    reply_text = res.json().get("reply", "")
-                else:
-                    reply_text = f"基于笔记《{title}》分析：\n\n关于您的提问“{question}”，核心要点在于：{content[:200]}..."
-            except Exception:
-                reply_text = f"基于笔记《{title}》分析：\n\n关于您的提问“{question}”，核心要点在于：{content[:200]}..."
+            if not self.llm:
+                return {"code": 503, "error": "笔记模型引擎未配置"}
+            note = dict(note_row)
+            note["key_points"] = json.loads(note.get("key_points") or "[]")
+            with conn:
+                recent = conn.execute(
+                    "SELECT role, content FROM note_chat_history WHERE note_id = ? ORDER BY id DESC LIMIT 6",
+                    (raw_id,),
+                ).fetchall()
+            history = [{"role": row["role"], "content": row["content"]} for row in reversed(recent)]
+            reply_text = self.llm.chat_with_note(note, question, history)
+            if reply_text.startswith("⚠️"):
+                return {"code": 502, "error": reply_text}
 
             # 写入 chat_history 数据库
             if conn:

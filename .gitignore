@@ -1,5 +1,6 @@
 # Private Configurations & Secrets
 config.yaml
+omp_auth.json
 *.pem
 *.key
 
@@ -18,6 +19,7 @@ __pycache__/
 venv/
 env/
 ENV/
+node_modules/
 
 # OS & IDE
 .idea/

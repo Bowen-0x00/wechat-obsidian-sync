@@ -19,7 +19,7 @@ Say goodbye to costly commercial subscription fees and privacy exposure risks! Y
   - Powered by Enterprise WeChat's official "WeChat Customer Service" or "Self-Built App" dual engine.
   - Sits permanently in your primary WeChat chat list with an official enterprise badge. Forward any article directly via "Send to friend" without complex copying.
 - 🧠 **LLM-Powered Content Enrichment**:
-  - **Articles & Web Links**: Automatically scrapes full web page / WeChat official account content, strips noise, and queries LLMs (DeepSeek, OpenAI, Claude, etc.) to produce a **100-word TLDR summary**, key takeaways, and relevant Obsidian `#tags` (e.g., `#ComputerArchitecture`, `#LLM`, `#Chiplet`).
+  - **Articles & Web Links**: Scrapes and cleans article text, then calls the model directly through the local Antigravity gateway for TLDR summaries, key points, and Obsidian tags.
   - **Quick Thoughts**: Automatically classifies memos and appends 1~2 relevant tags (e.g., `#ideas`, `#todo`).
 - 📝 **Safe Local Obsidian Writing**:
   - Matches standard Obsidian vault conventions: supports **Daily Notes** (e.g., `Daily/YYYY-MM-DD/WeChat_YYYY-MM-DD.md`) or a single **Inbox file** (e.g., `Inbox.md`).
@@ -39,7 +39,7 @@ Say goodbye to costly commercial subscription fees and privacy exposure risks! Y
 | :--- | :--- | :--- | :--- |
 | **`/status`** | `状态` | **Real-time live probe** of LLM connectivity & Zhihu Cookie health | `/status` |
 | **`/llm model`** | `模型` | View active LLM model and recommended candidates | `/llm model` |
-| **`/llm model <Name>`**| - | **Hot-switch active model** with pre-flight connection test | `/llm model gemini-3.1-pro-preview` |
+| **`/llm model <Name>`**| - | **Hot-switch active model** with pre-flight connection test | `/llm model gemini-3.8-flash` |
 | **`/llm <question>`** | - | Multi-turn conversational follow-up on the latest note | `/llm What is the key innovation?` |
 | **`/cookie <Cookie>`** | - | **Hot-update Zhihu cookie** directly from WeChat chat | `/cookie _xsrf=...` |
 | **`/help`** | `帮助` | Display interactive command manual | `/help` |
@@ -94,14 +94,71 @@ wechat:
 
 llm:
   enable: true
-  base_url: "https://api.deepseek.com/v1"
-  api_key: "YOUR_LLM_API_KEY"
-  model: "deepseek-chat"
+  base_url: "http://127.0.0.1:18890/v1"
+  api_key: ""                            # Local bearer key comes from LLM_GATEWAY_KEY
+  model: "default"                       # Follow the web setting; the initial gateway default is gemini-3.8-flash
 
 sync:
   api_secret: "YOUR_CUSTOM_SYNC_SECRET"
   port: 8088
 ```
+
+#### Switchable upstreams and research agents
+
+All four services share `llm_gateway/`; direct inference versus research-agent routing stays unchanged when switching upstreams. Production currently uses the previous OpenAI-compatible API. Antigravity OAuth support and private credentials remain available for a later switch:
+
+- `/v1/chat/completions`: direct inference for notes, vision, social radar, ordinary email, and their follow-ups.
+- `/agent/v1/chat/completions`: `thinkingLevel: high` for insight generation/follow-ups and paper evaluation/follow-ups.
+- Data access is limited to `search_history`, `read_history`, and `read_chat_history`. Fixed SQLite databases are opened read-only, with bounded result sizes, tool calls, and execution deadlines. No shell, arbitrary SQL, or write tools. Structured analyses finish through the non-persisting `submit_analysis` tool, avoiding invalid JSON in long answers. Follow-ups use the latest history messages in chronological order.
+- OpenAI-compatible research-agent tool turns use `stream: false` to obtain complete function names, IDs, and arguments before executing the same agent protocol. Broken streamed calls are never guessed, merged, or renamed. High reasoning and read-only tools remain enabled; native Antigravity transport is unchanged. Provider errors, cancellation, and truncation take precedence over missing-submission errors and identify the resolved model/upstream.
+- Default: `gemini-3.8-flash`. Model choices come from the active upstream roster; neither backend nor model is switched automatically. Google authorization, discovery, and inference availability must be verified separately.
+
+Direct inference has a 45-second total deadline; research agents have 240 seconds. Changing the API does not remove these limits. A gateway-owned deadline returns HTTP `504` / `gateway_timeout` with the resolved model and upstream host, separately from client cancellation and upstream failures. `default` is a selector for the web-configured global model, not a model ID. A single timeout does not prove an invalid key, an unsaved configuration, or a switch back to Google; it does not trigger automatic retries or backend changes.
+
+Use **Model settings** in the upper-right navigation (the sliders icon on phones) to edit the shared backend, API Base URL, API Key, and default model without SSH.
+
+1. Select an OpenAI-compatible API or the Antigravity account already imported on the server.
+2. Enter a public HTTPS base URL, usually ending in `/v1`. A blank key retains the stored credential. Changing endpoints requires a new key; existing keys are never returned to the browser or forwarded to the new endpoint.
+3. **Load models** retrieves the provider roster. **Test connection** sends a short model request without changing configuration. OpenAI-compatible research providers must correctly support non-streaming tool calls; ordinary direct inference keeps its existing transport.
+4. **Save and apply** preflights the model, atomically persists `data/llm-upstream.env` with mode `0600`, then hot-swaps the runtime snapshot. Failures leave the active configuration untouched; stale concurrent edits require a reload. In-flight requests retain their previous snapshot.
+
+If the upstream is unavailable or its key expires at startup, management remains available while inference explicitly reports unavailable. Correct the configuration in this panel to recover without first editing files over SSH.
+
+Business configuration `llm.model: default` follows the shared setting; all four deployed services use this alias. An explicit `/llm model <ID>` command overrides it for that application; `/llm model default` restores following. Direct-inference versus high research-agent routing is unchanged.
+
+The existing dashboard Bearer authentication protects `GET /api/dashboard/model-settings` and `POST /api/dashboard/model-settings/models`, `/test`, `/save`. Reads expose only `api_key_configured`; candidate writes use `revision`, `backend`, `base_url`, `default_model`, and an optional new `api_key`. Query-string authentication is not accepted for these endpoints. Use HTTPS for public dashboard access.
+
+
+Only the gateway reads `data/llm-upstream.env` (mode `0600`); the Python business services never receive the upstream key:
+
+```dotenv
+LLM_BACKEND=openai-compatible
+LLM_UPSTREAM_BASE_URL=https://code28.ccwu.cc/v1
+LLM_UPSTREAM_API_KEY=<previous API key, stored only in the private server file>
+LLM_DEFAULT_MODEL=gemini-3.8-flash
+```
+
+This mode does not load Google credentials or query Google's model roster, and bypasses the dedicated Google proxy by default. Set `LLM_UPSTREAM_PROXY` only if the upstream API itself requires a proxy. Prefer switching back to Antigravity in the web settings: save preflights native inference and retains the unused API URL/key. Manual changes to the environment file require `systemctl restart wehub_llm`; web saves do not.
+
+Install Bun ≥1.4.4 at `/opt/wehub-llm/bin/bun` for the systemd template. The following retained Antigravity initialization steps require a Google-capable egress proxy only for that mode (currently a dedicated loopback listener at `127.0.0.1:18891`):
+
+```bash
+export PATH=/opt/wehub-llm/bin:$PATH
+mkdir -p /root/wechat_obsidian/data
+cd /root/wechat_obsidian/llm_gateway
+bun install --frozen-lockfile
+export PI_PROXY=http://127.0.0.1:18891 HTTPS_PROXY=http://127.0.0.1:18891 HTTP_PROXY=http://127.0.0.1:18891
+export LLM_AUTH_DB=/root/wechat_obsidian/data/llm-auth.db
+bun import-account.ts < /secure/antigravity_accounts.json
+umask 077
+printf 'LLM_GATEWAY_KEY=%s\n' "$(openssl rand -hex 32)" > ../data/llm-gateway.env
+cp ../deploy/wehub_llm.service /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now wehub_llm
+```
+
+Import the account through stdin only. Keep the OAuth database and gateway environment file in ignored `data/` with mode `0600`; a refresh token is not a business-service API key. Each systemd unit loads the same `LLM_GATEWAY_KEY` via `EnvironmentFile`; foreground Python processes need that variable too. This is a loopback-only, single-owner service, not a public or multi-tenant API.
+
 
 #### 2. Install & Start
 ```bash

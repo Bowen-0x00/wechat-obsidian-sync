@@ -17,12 +17,14 @@ INCLUDE_ITEMS = [
     "tests",
     "deploy",
     "requirements.txt",
+    "llm_gateway",
     "web"
 ]
 
 EXCLUDE_PATTERNS = {
     "__pycache__",
     ".git",
+    "node_modules",
     "data"  # 保护服务器上的 inbox.db 与图片缓存不被覆盖
 }
 
@@ -92,8 +94,15 @@ def main():
     # 注册或重启服务
     print("[*] 配置并重启远程 wechat_obsidian 服务...")
     setup_cmd = (
+        "test -x /opt/wehub-llm/bin/bun && "
+        "test -s /root/wechat_obsidian/data/llm-gateway.env && "
+        "env HTTPS_PROXY=http://127.0.0.1:18891 HTTP_PROXY=http://127.0.0.1:18891 "
+        "/opt/wehub-llm/bin/bun install --cwd /root/wechat_obsidian/llm_gateway --frozen-lockfile && "
+        "cp /root/wechat_obsidian/deploy/wehub_llm.service /etc/systemd/system/ && "
         "cp /root/wechat_obsidian/deploy/wechat_obsidian.service /etc/systemd/system/ && "
         "systemctl daemon-reload && "
+        "systemctl enable --now wehub_llm && "
+        "systemctl restart wehub_llm && "
         "systemctl enable --now wechat_obsidian && "
         "systemctl restart wechat_obsidian"
     )

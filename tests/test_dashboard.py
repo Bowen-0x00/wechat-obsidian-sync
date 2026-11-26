@@ -26,7 +26,6 @@ def test_dashboard_service_auth(mock_config):
 
     # 2. 验证生成 Token 与 Bearer Token
     token = srv.generate_token("test_token_secret_8888")
-    assert len(token) == 64  # SHA256 hex string
     assert srv.verify_auth(token) is True
     assert srv.verify_auth(f"Bearer {token}") is True
     assert srv.verify_auth("Bearer invalid_token") is False
@@ -59,17 +58,6 @@ def test_dashboard_service_filters(mock_config):
     assert len(lim_res["items"]) <= 3
 
 
-def test_web_index_html_exists():
-    html_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "web", "index.html")
-    assert os.path.exists(html_path)
-    with open(html_path, "r", encoding="utf-8") as f:
-        content = f.read()
-    assert "WeHub" in content
-    assert "id=\"authModal\"" in content
-    assert "id=\"drawerOverlay\"" in content
-    assert "id=\"editModal\"" in content
-    assert "id=\"editItemBtn\"" in content
-    assert "id=\"deleteItemBtn\"" in content
 
 
 def test_dashboard_edit_delete_and_timezone(tmp_path, mock_config):

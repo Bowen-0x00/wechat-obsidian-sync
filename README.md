@@ -19,7 +19,7 @@
   - 基于企业微信官方「微信客服」或「自建应用」双引擎驱动。
   - 支持直接在微信主聊天列表中常驻（带有专属企业认证标识），在任何公众号文章或网页中点击“发送给朋友”即可一键转发收录。
 - 🧠 **大模型智能增强 (LLM-Powered)**：
-  - **公众号长文 / 网页链接**：自动智能抓取正文，剔除噪音广告，调用大模型（DeepSeek / OpenAI / Claude 等）生成 **100 字核心速读（TLDR）**、核心要点提炼，并自动打上符合知识库体系的标准 Obsidian 标签（如 `#计算机体系结构`、`#AI芯片` 等）。
+  - **公众号长文 / 网页链接**：自动抓取正文、清理噪音，通过本机 Antigravity 网关直接请求模型，生成 **100 字核心速读（TLDR）**、核心要点和 Obsidian 标签。
   - **灵感闪念随手记**：阅读简短文字，自动识别语义打上 1~2 个分类标签（如 `#想法`、`#待办`）。
 - 📝 **Obsidian 本地文件安全落盘**：
   - 完美适配主流 Obsidian 归档规范：支持**按日归档**（如 `Daily/YYYY-MM-DD/同步助手_YYYY-MM-DD.md`）或**单文件归档**（如 `Inbox.md`）。
@@ -39,7 +39,7 @@
 | :--- | :--- | :--- | :--- |
 | **`/status`** | `状态` | **实时探测**大模型连通性与知乎 Cookie 有效性看板 | 发送 `/status` |
 | **`/llm model`** | `模型` | 查看大模型当前主模型与常用候选列表 | 发送 `/llm model` |
-| **`/llm model <模型名>`** | - | **热切换并持久化大模型** (支持连通性预检) | 发送 `/llm model gemini-3.1-pro-preview` |
+| **`/llm model <模型名>`** | - | **热切换并持久化大模型** (支持连通性预检) | 发送 `/llm model gemini-3.8-flash` |
 | **`/llm <问题>`** | - | 对最新一篇笔记展开多轮 AI 深度追问 | 发送 `/llm 核心架构创新是什么？` |
 | **`/cookie <Cookie>`** | - | **免登录服务器，直接在微信热更新知乎 Cookie** | 发送 `/cookie _xsrf=...` |
 | **`/help`** | `帮助` | 查看完整使用说明与指令列表 | 发送 `/help` |
@@ -100,14 +100,71 @@ wechat:
 
 llm:
   enable: true
-  base_url: "https://api.deepseek.com/v1" # 兼容 OpenAI 格式 API
-  api_key: "YOUR_LLM_API_KEY"
-  model: "deepseek-chat"
+  base_url: "http://127.0.0.1:18890/v1"
+  api_key: ""                            # 由 LLM_GATEWAY_KEY 环境变量提供本机网关密钥
+  model: "default"                        # 跟随网页设置；网关实际默认模型初始为 gemini-3.8-flash
 
 sync:
   api_secret: "YOUR_CUSTOM_SYNC_SECRET"   # 自定义客户端拉取密钥
   port: 8088                              # 服务监听端口
 ```
+
+#### 可切换模型通道与研究 agent
+
+四个业务服务共用 `llm_gateway/`，实时请求与研究 agent 分流不随上游切换而改变。当前恢复使用原 OpenAI-compatible API；Antigravity OAuth 实现及私有凭据保留，修复地区/代理问题后可切回：
+
+- `/v1/chat/completions`：微信笔记、图片理解、雷达、普通邮件及其追问直接请求模型，不启动 agent。
+- `/agent/v1/chat/completions`：洞察提炼、洞察追问、论文评估和论文追问使用 `thinkingLevel: high`，按需检索历史资料。
+- 数据访问工具为 `search_history`、`read_history`、`read_chat_history`，以只读 SQLite 连接访问固定数据库；限制结果长度、调用次数和总执行时间，不提供 shell、文件写入或任意 SQL。结构化分析通过不写库的 `submit_analysis` 提交最终对象，避免长回答破坏 JSON；历史追问取最近消息并按时间正序送入上下文。
+- OpenAI-compatible 研究 Agent 的工具回合使用 `stream: false` 获取完整函数名、ID 与参数，再按原 Agent 协议执行；不会猜测、拼接或重命名上游损坏的流式调用。仍使用 high 推理和相同只读工具，Antigravity 原生协议不变。模型错误、取消和截断优先于“没有提交分析”报错，并显示实际模型及上游主机。
+- 默认模型为 `gemini-3.8-flash`；`/llm model` 从当前上游模型目录读取候选，不自动切换后端或模型。Google 的授权、目录和推理可用性需分别验证。
+
+实时直调有 45 秒总截止时间，研究 agent 有 240 秒总截止时间；更换 API 不会取消这些上限。网关自身达到截止时间时返回 HTTP `504` / `gateway_timeout`，错误中注明实际模型与上游主机；调用客户端取消或断开则与上游错误区分。`default` 只是跟随网页全局模型的选择器，不是实际模型名。单次超时不代表 Key 失效、配置未保存或切回 Google；网关不会因此自动重试或切换通道。
+
+网页右上角 **「模型设置」** 可管理共享通道、API Base URL、API Key 与全局默认模型，无需登录服务器。手机端为同位置的滑杆图标。
+
+1. 选择 OpenAI 兼容 API 或已在服务器导入的 Antigravity 账号。
+2. 填写公网 HTTPS API 根地址（通常以 `/v1` 结尾）。API Key 留空保留已有值，更换 API 地址必须输入对应的新 Key；旧 Key 不会回传至浏览器或发往新地址。
+3. 使用「读取模型列表」选择模型，「测试连接」发送简短请求但不修改配置。研究 agent 所用 OpenAI-compatible 上游还需正确支持非流式工具调用，普通直调保持原请求方式。
+4. 「保存并生效」会先验证模型请求，通过后原子写入 `data/llm-upstream.env`（`0600`）并热更新。失败保留当前配置；多窗口冲突会要求重新加载。正在执行的请求继续使用原快照。
+
+如果启动时上游不可用或 Key 已失效，配置接口仍保持可用，模型请求会明确返回不可用；可直接在此面板修正配置并恢复，无需先 SSH 修改文件。
+
+业务配置 `llm.model: default` 表示跟随网页全局默认，本次部署的四个应用均已启用。通过微信 `/llm model <具体模型ID>` 独立指定的应用可覆盖全局默认；发送 `/llm model default` 恢复跟随。实时直调与论文、Insight 的 high agent 分流不变。
+
+配置 API 与原工作台共用 Bearer 鉴权：`GET /api/dashboard/model-settings`，以及 `POST /api/dashboard/model-settings/models`、`/test`、`/save`。读取仅返回 `api_key_configured` 标志；提交字段为 `revision`、`backend`、`base_url`、`default_model` 和可选新 `api_key`。禁止用 URL 查询参数授权配置接口，公网访问工作台应使用 HTTPS。
+
+
+网关单独读取权限为 `0600` 的 `data/llm-upstream.env`，四个 Python 业务服务不读取上游密钥：
+
+```dotenv
+LLM_BACKEND=openai-compatible
+LLM_UPSTREAM_BASE_URL=https://code28.ccwu.cc/v1
+LLM_UPSTREAM_API_KEY=<原 API 密钥，仅保存在服务器私有文件中>
+LLM_DEFAULT_MODEL=gemini-3.8-flash
+```
+
+该模式不加载 Google 凭据、不调用 Google 模型目录，默认绕过 Google 专用代理。若上游 API 本身需要代理，可单独设置 `LLM_UPSTREAM_PROXY`。推荐在网页切回 Antigravity，保存前会验证原生推理；API 地址与密钥会保留，Antigravity 模式不会使用它们。手工修改此文件时需 `systemctl restart wehub_llm`，网页保存则无需重启。
+
+部署前需要 Bun ≥1.4.4，systemd 模板使用 `/opt/wehub-llm/bin/bun`。以下为保留的 Antigravity 初始化步骤；仅该模式需要可服务账号的 Google 出口代理（当前专用本机入口 `127.0.0.1:18891`）：
+
+```bash
+export PATH=/opt/wehub-llm/bin:$PATH
+mkdir -p /root/wechat_obsidian/data
+cd /root/wechat_obsidian/llm_gateway
+bun install --frozen-lockfile
+export PI_PROXY=http://127.0.0.1:18891 HTTPS_PROXY=http://127.0.0.1:18891 HTTP_PROXY=http://127.0.0.1:18891
+export LLM_AUTH_DB=/root/wechat_obsidian/data/llm-auth.db
+bun import-account.ts < /secure/antigravity_accounts.json
+umask 077
+printf 'LLM_GATEWAY_KEY=%s\n' "$(openssl rand -hex 32)" > ../data/llm-gateway.env
+cp ../deploy/wehub_llm.service /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now wehub_llm
+```
+
+账号文件仅通过 stdin 导入；OAuth 库和本机密钥均位于忽略提交的 `data/`，权限应为 `0600`，不要把 refresh token 填入业务 `api_key`。各服务通过 `EnvironmentFile` 加载同一 `LLM_GATEWAY_KEY`；前台运行 Python 服务时也需先加载此环境变量。该网关是单一所有者的本机服务，不是多租户或公网 API；不要对外暴露端口或凭据。
+
 
 #### 2. 安装依赖并启动
 ```bash

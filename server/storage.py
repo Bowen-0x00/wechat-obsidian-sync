@@ -300,11 +300,11 @@ class InboxStorage:
             cur.execute("""
             SELECT role, content FROM note_chat_history
             WHERE note_id = ?
-            ORDER BY id ASC
+            ORDER BY id DESC
             LIMIT ?
             """, (note_id, limit))
             rows = cur.fetchall()
-            return [{"role": r["role"], "content": r["content"]} for r in rows]
+            return [{"role": r["role"], "content": r["content"]} for r in reversed(rows)]
 
     def mark_as_synced(self, note_ids: List[int]):
         """将指定的笔记标记为已同步."""

@@ -53,6 +53,16 @@ def test_incremental_sync_storage():
         assert len(storage.get_unsynced_notes()) == 0
 
 
+def test_followup_context_uses_latest_messages_in_chronological_order(tmp_path):
+    storage = InboxStorage(db_path=str(tmp_path / "history.db"))
+    note_id = storage.add_note(msg_id="history", msg_type="text", from_user="owner", create_time=1000, raw_content="note")
+    for index in range(10):
+        storage.add_chat_message(note_id, "owner", "user", f"message-{index}")
+    assert [item["content"] for item in storage.get_chat_history(note_id, limit=3)] == [
+        "message-7", "message-8", "message-9"
+    ]
+
+
 def test_anti_spider_detection():
     """测试反爬标语拦截，确保不会将知乎等站点的 403 占位语误当作正文."""
     crawler = ArticleCrawler()

@@ -1,0 +1,28 @@
+[Unit]
+Description=WeHub switchable model inference and research agent gateway
+After=network-online.target mihomo.service
+Wants=mihomo.service
+Before=wechat_obsidian.service social_radar.service insight_extractor.service mail_assist.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/wechat_obsidian/llm_gateway
+EnvironmentFile=/root/wechat_obsidian/data/llm-gateway.env
+EnvironmentFile=-/root/wechat_obsidian/data/llm-upstream.env
+Environment=PI_CODING_AGENT_DIR=/root/wechat_obsidian/data/llm-state
+Environment=LLM_AUTH_DB=/root/wechat_obsidian/data/llm-auth.db
+Environment=PI_PROXY=http://127.0.0.1:18891
+Environment=HTTPS_PROXY=http://127.0.0.1:18891
+Environment=HTTP_PROXY=http://127.0.0.1:18891
+Environment=NO_PROXY=localhost,127.0.0.1,::1
+ExecStart=/opt/wehub-llm/bin/bun server.ts
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+MemoryMax=350M
+
+[Install]
+WantedBy=multi-user.target

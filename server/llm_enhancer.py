@@ -2,6 +2,7 @@
 
 import re
 import json
+import os
 import httpx
 from typing import Dict, Any, List, Optional
 from openai import OpenAI
@@ -11,103 +12,56 @@ from loguru import logger
 class LLMEnhancer:
     """基于大模型的文章深度摘要与闪念打标签引擎."""
 
-    def __init__(self, base_url: str, api_key: str, model: str = "deepseek-chat", temperature: float = 0.3, enable: bool = True, proxy: Optional[str] = None):
+    def __init__(self, base_url: str, api_key: str, model: str = "default", temperature: float = 0.3, enable: bool = True, proxy: Optional[str] = None):
+        api_key = os.environ.get("LLM_GATEWAY_KEY") or api_key
         self.enable = enable and bool(api_key) and api_key != "YOUR_LLM_API_KEY"
         self.model = model
         self.temperature = temperature
         self.base_url = base_url
         self.api_key = api_key
-        self.proxy = proxy
         self.client: Optional[OpenAI] = None
-        self.direct_client: Optional[OpenAI] = None
-
         if self.enable:
-            http_client = httpx.Client(timeout=30.0, proxy=proxy) if proxy else httpx.Client(timeout=30.0)
             self.client = OpenAI(
-                base_url=base_url,
-                api_key=api_key,
-                http_client=http_client
+                base_url=base_url, api_key=api_key, max_retries=0,
+                http_client=httpx.Client(timeout=50.0, proxy=proxy, trust_env=False),
             )
-            if proxy:
-                self.direct_client = OpenAI(
-                    base_url=base_url,
-                    api_key=api_key,
-                    http_client=httpx.Client(timeout=30.0)
-                )
-            else:
-                self.direct_client = self.client
-            logger.info(f"[LLM] 已初始化大模型引擎 (首选模型: {model}, 代理: {proxy or '直连'})")
+            logger.info(f"[LLM] 共享网关直接请求引擎就绪 (模型: {model})")
         else:
-            logger.warning("[LLM] 大模型引擎已停用或未配置 API Key")
+            logger.warning("[LLM] 大模型引擎已停用或未配置本机网关凭据")
 
-    def _call_chat_completions(self, messages: List[Dict[str, Any]], response_format: Optional[Dict[str, str]] = None, vision_mode: bool = False) -> str:
-        """调用大模型，具备自动多候选模型故障转移与代理连接故障自愈能力."""
-        if vision_mode:
-            candidate_models = [self.model, "gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.1-pro-preview", "gpt-4o", "gpt-4o-mini"]
-            candidate_models = [m for m in candidate_models if m and "deepseek" not in m.lower()]
-        else:
-            candidate_models = [self.model, "gemini-3.1-pro-preview", "gemini-3.6-flash", "gemini-3.8-flash", "deepseek-chat"]
-        seen = set()
-        ordered_models = []
-        for m in candidate_models:
-            if m and m not in seen:
-                seen.add(m)
-                ordered_models.append(m)
-        clients = [self.client]
-        if self.direct_client and self.direct_client is not self.client:
-            clients.append(self.direct_client)
+    def _call_chat_completions(self, messages: List[Dict[str, Any]], response_format: Optional[Dict[str, str]] = None) -> str:
+        """直接请求共享网关，不启动 agent，不回退到其他账号或模型."""
+        if not self.client:
+            raise RuntimeError("LLM 未启用")
+        kwargs = {"model": self.model, "messages": messages, "temperature": self.temperature}
+        if response_format:
+            kwargs["response_format"] = response_format
+        response = self.client.chat.completions.create(**kwargs)
+        content = response.choices[0].message.content or ""
+        if not content.strip():
+            raise RuntimeError("模型未返回有效回答")
+        return content
 
-        last_error = None
-        for cli in clients:
-            for m in ordered_models:
-                try:
-                    kwargs = {
-                        "model": m,
-                        "messages": messages,
-                        "temperature": self.temperature,
-                    }
-                    if response_format:
-                        kwargs["response_format"] = response_format
-                    resp = cli.chat.completions.create(**kwargs)
-                    content = resp.choices[0].message.content or ""
-                    if content.strip():
-                        if m != self.model:
-                            logger.info(f"[LLM] 模型 [{self.model}] 不可用，已自动故障转移至候选模型 [{m}]")
-                        return content
-                except Exception as e:
-                    last_error = e
-                    logger.debug(f"[LLM] 候选模型 [{m}] 调用失败: {e}")
-                    continue
+    def available_models(self) -> List[str]:
+        if not self.client:
+            return []
+        return [model.id for model in self.client.models.list().data]
 
-        raise last_error or RuntimeError("所有大模型通道均不可用")
     def test_model(self, model_name: str) -> tuple[bool, str]:
-        """测试指定模型的真实连通性与响应速度."""
-        if not self.enable:
-            return False, "LLM 未启用或未配置 API Key"
-
+        if not self.client:
+            return False, "LLM 未启用或未配置网关凭据"
         import time
-        start_time = time.time()
-        clients = [self.client]
-        if self.direct_client and self.direct_client is not self.client:
-            clients.append(self.direct_client)
-
-        last_err = ""
-        for cli in clients:
-            try:
-                resp = cli.chat.completions.create(
-                    model=model_name,
-                    messages=[{"role": "user", "content": "hi"}],
-                    max_tokens=5,
-                    timeout=8.0
-                )
-                cost = time.time() - start_time
-                if resp.choices and resp.choices[0].message:
-                    return True, f"{cost:.2f}s"
-            except Exception as e:
-                last_err = str(e)
-                continue
-
-        return False, last_err[:120]
+        start = time.monotonic()
+        try:
+            response = self.client.chat.completions.create(
+                model=model_name, messages=[{"role": "user", "content": "Reply OK"}],
+                max_tokens=16, timeout=12.0,
+            )
+            if response.choices[0].message.content:
+                return True, f"{time.monotonic() - start:.2f}s"
+            return False, "模型未返回回答"
+        except Exception as error:
+            return False, str(error)[:160]
 
 
     def summarize_article(self, title: str, text: str, url: str) -> Dict[str, Any]:
@@ -294,8 +248,7 @@ class LLMEnhancer:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_content}
                 ],
-                response_format={"type": "json_object"},
-                vision_mode=True
+                response_format={"type": "json_object"}
             )
             data = self._parse_json(raw)
             tags = [t if t.startswith("#") else f"#{t}" for t in data.get("tags", [])]

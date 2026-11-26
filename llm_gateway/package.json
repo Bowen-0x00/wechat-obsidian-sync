@@ -1,0 +1,13 @@
+{
+  "name": "wehub-antigravity-gateway",
+  "private": true,
+  "type": "module",
+  "scripts": { "start": "bun server.ts", "test": "bun test", "check": "bun node_modules/typescript/bin/tsc --noEmit" },
+  "dependencies": {
+    "@oh-my-pi/pi-ai": "18.14.0",
+    "@oh-my-pi/pi-agent-core": "18.14.0",
+    "@oh-my-pi/pi-catalog": "18.14.0"
+  },
+  "devDependencies": { "@types/bun": "1.3.14", "typescript": "7.0.2" },
+  "engines": { "bun": ">=1.4.4" }
+}
